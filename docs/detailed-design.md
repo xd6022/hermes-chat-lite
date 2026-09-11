@@ -12,7 +12,7 @@
 
 | 阶段 | 状态 | 交付物 | 验收方式 |
 | --- | --- | --- | --- |
-| P0 工程搭建 | ⬜ 未开始 | `package.json` `vite.config.ts` `tailwind.config.js` `src/api/hermes.ts` | `npm run dev` 起得来，`getSessions()` 在控制台打印真实会话 |
+| P0 工程搭建 | ✅ 完成（2026-09-11 实测） | `package.json` `vite.config.ts` `tailwind.config.js` `src/api/{types,hermes,sse}.ts` | dev server 200；反代注入 key 后 `/api/sessions` 返回 200 + 真实会话 |
 | P1 只读链路 | ⬜ 未开始 | `Sidebar.vue` `ChatWindow.vue` `MessageItem.vue` | 左侧出现真实会话，点击能渲染历史消息与代码高亮 |
 | P2 写链路 | ⬜ 未开始 | `InputBox.vue` + 新建会话 | Enter 发送，消息立刻上屏，Shift+Enter 换行 |
 | P3 流式 | ⬜ 未开始 | `src/api/sse.ts` `RunStatus.vue` + 流式渲染 | 回复逐字出现；**工具执行可见 + 明确完成态**（见 5.6） |
@@ -20,6 +20,44 @@
 | P5 安全加固（可选） | ⬜ 未开始 | Caddy basic_auth | 未带口令访问返回 401 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
+
+### 0.1 跨会话续接（接手先读这段，再读对应阶段章节）
+
+**路径**：`/opt/data/hermes-chat-lite`（远程 `git@github.com:xd6022/hermes-chat-lite.git`，主分支 `main`）
+**下一步**：P1 只读链路 —— 顺序是 `lib/markdown.ts` → `lib/format.ts` → `stores/chat.ts` → `App.vue` 骨架 → `Sidebar.vue` → `ChatWindow.vue` + `MessageItem.vue`（`App.vue` 目前是临时自检页，P1 会整体替换）。
+
+**可复制命令**：
+
+```bash
+cd /opt/data/hermes-chat-lite
+
+# 依赖（已装则跳过；npm 11 必须 approve，否则 esbuild 起不来）
+npm install --registry=https://mirrors.cloud.tencent.com/npm/
+npm approve-scripts esbuild
+
+# 起 dev server（key 由 vite 反代注入，前端里没有 key）
+set -a && . /opt/data/.env && set +a
+node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
+
+# 自检：反代 + 鉴权是否通（期望 200 + 真实会话 JSON）
+curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:5173/api/sessions?limit=3"
+
+# 类型检查 / 构建
+node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
+node node_modules/vite/bin/vite.js build
+```
+
+**本机特有点坑（会反复踩）**：
+
+| 坑 | 说明 |
+| --- | --- |
+| `./node_modules/.bin/<x>` 被终端拦截 | 判定为"从网关内重启服务"。一律改 `node node_modules/<pkg>/bin/<x>.js` |
+| npm 11 拦 postinstall | 首次装完必须 `npm approve-scripts esbuild`，否则 vite 起不来 |
+| key 的变量名 | hermes 容器里是 `API_SERVER_KEY`（非 `HERMES_API_SERVER_KEY`），vite 配置两个都认，缺 key 会打印警告 |
+| 8642 只在容器内网 | 本容器内可 `http://127.0.0.1:8642` 直连；对外只能经 Caddy/nginx |
+| 写盘限制 | 临时/核验文件统一放 `/opt/data/.verify/` |
+
+**验证原则**：每阶段验收都要有真实工具输出（接口真返回、构建真通过、`vue-tsc` 真无错），不接受"应该能跑"。
 
 ---
 

@@ -13,7 +13,15 @@ import vue from '@vitejs/plugin-vue'
  * 或从宿主机的 hermes .env 里 source 出来再跑。
  */
 const API_TARGET = process.env.HERMES_API_DEV_URL || 'http://127.0.0.1:8642'
-const API_KEY = process.env.HERMES_API_SERVER_KEY || ''
+// Hermes 容器里的变量名是 API_SERVER_KEY；HERMES_API_SERVER_KEY 只是历史别名，两个都认
+const API_KEY = process.env.API_SERVER_KEY || process.env.HERMES_API_SERVER_KEY || ''
+
+if (!API_KEY) {
+  console.warn(
+    '[vite] 未检测到 API_SERVER_KEY —— /api 反代将不带鉴权头，请求会 401。\n' +
+      '       启动方式：set -a && . <hermes .env> && set +a && node node_modules/vite/bin/vite.js',
+  )
+}
 
 const upstream = {
   target: API_TARGET,

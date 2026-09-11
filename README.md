@@ -97,6 +97,8 @@ chat.<域名> {
 | 容器 **unhealthy** | key/反代有问题（healthcheck 打的是需要鉴权的 `/api/sessions`，不是 `/health`） |
 | 点发送毫无反应 | 早期版本的锅（错误静默）；现在会显示红色横幅 + 重试 |
 
+**操作纪律（血的教训）**：`DELETE /api/sessions/{id}` 是**硬删除**（会话 + 消息一起没，无回收站，MySQL 归档每天 21:00 才跑一次）。清理测试会话**必须用显式 id 白名单**——用 `source=api_server` 之类的条件批量删，会把真实会话一起删掉且不可恢复。详见 `docs/incident-2026-09-11-deleted-session.md`。
+
 ## 目录
 
 ```

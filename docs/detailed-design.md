@@ -686,3 +686,4 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 19. **完成态必须由事件显式判定** → 见 5.6 的判定表；"界面不再变化"≠"已完成"，这正是 Open WebUI 让您困惑的地方。
 20. **健康检查不能打 `/health`** → 实测 `/health` 不带 key 也返回 200，密钥填错照样 healthy，等于验不出问题；要打 `GET /api/sessions?limit=1`（无 key/错 key 返回 401），才能同时验证反代与密钥有效。
 21. **★★ 带 `Origin` 头的请求会被 Hermes 直接 403**（本项目部署时真实踩到，代码与文档此前判断有误）→ Hermes 的 CORS 中间件在 `cors: false` 时，只要请求带 `Origin` 就返回 **403 空 body**（`Server: Python/3.x aiohttp`）。**浏览器所有 POST 都自带 `Origin`，curl 不发送** → 结果就是：命令行怎么测都通，真机浏览器一打开就死。修法：反代层剥掉它 —— nginx `proxy_set_header Origin "";`，vite dev proxy `proxyReq.removeHeader('origin')`。**注意：这不是"开 CORS 就行"的问题，同源反代本身也不够。**
+22. **★★ 清理测试会话只许按 id 白名单，禁止按 `source` 批量删**（2026-09-11 真实事故，见 `docs/incident-2026-09-11-deleted-session.md`）→ `DELETE /api/sessions/{id}` 是**硬删除**（会话 + 消息一起没，无回收站）；MySQL 归档 cron 每天 21:00 才跑一次，之前删的东西没有第二份副本。用 `source=api_server` 做批量条件删除会**把用户的真实会话一起删掉，且不可恢复**（页级抢救实测无效：被删页已被后续写入复用）。

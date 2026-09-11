@@ -92,12 +92,39 @@
   }
 }
 
-/* 流式输出时的末尾光标 */
-.stream-caret::after {
-  content: '▍';
-  margin-left: 1px;
+/* 流式输出末尾光标（MessageItem 渲染后注入的 span.caret） */
+.caret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: #6b7280;
   animation: caret-blink 1s steps(2, start) infinite;
-  color: #9ca3af;
+}
+
+/* 代码块复制按钮（MessageItem 渲染后注入 DOM） */
+.md-body pre {
+  position: relative;
+}
+
+.copy-code {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #6b7280;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.md-body pre:hover .copy-code {
+  opacity: 1;
 }
 
 @keyframes caret-blink {

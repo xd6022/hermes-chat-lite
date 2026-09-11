@@ -474,6 +474,8 @@ export interface UiMessage {
 
 **注意**：计时器用 `performance.now()` 本地算，不要依赖事件里的 `ts`（时钟/网络抖动会让它跳变）。
 
+**阶段切换规则（实测得出）**：一旦进入「正文生成」(`writing`)，**不因迟到的 `tool.progress` 降级回「思考中」** —— 实测事件顺序里 `tool.progress`（reasoning.available）会晚于首个 `assistant.delta` 到达，若不做保护，状态条会在正文已经开始输出时倒回"正在思考"。
+
 ### 5.7 Settings（最小化，不做模型切换）
 
 点顶部「Settings」右侧滑出小面板，只有三项：
@@ -635,6 +637,6 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 14. **markdown-it `html:false`** → 防止 agent 输出注入原始 HTML。
 15. **`tool.completed` 不带执行结果** → 服务端按 `(name, None, None)` 发出，只有工具名。想要结果得在 `run.completed.messages` 里按 `tool_call_id` 回填；别指望事件里有。**不要因为拿不到结果就退回 OpenAI 端点**（那会连工具名都看不到，正是 Open WebUI 的病）。
 16. **`tool.started` 的 `args` 是脱敏后的展示值** → 可以直接显示，但别当作真实参数入库/回传。
-17. **`assistant.completed.content` 要覆盖流式拼接结果** → delta 拼接在极端情况下可能丢字/重复，以 completed 的全文为准（覆盖即可，不要追加）。
+17. **`assistant.completed.content` 必须覆盖 delta 拼接** → 实测：delta 原文是 `["\n\nhermes-chat","-lite"]`，`completed` 是 `"hermes-chat-lite"`。**delta 会带前导换行等杂质**，追加会多出空行、少字就在所难免。以 `completed` 覆盖是必须的，不是防御性编程。
 18. **计时器别用事件里的 `ts`** → 用 `performance.now()` 本地算，否则时间会跳。
 19. **完成态必须由事件显式判定** → 见 5.6 的判定表；"界面不再变化"≠"已完成"，这正是 Open WebUI 让您困惑的地方。

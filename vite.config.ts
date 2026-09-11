@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 
 /**
@@ -9,44 +9,51 @@ import vue from '@vitejs/plugin-vue'
  *   生产环境由 nginx 做同一件事（见 nginx.conf）；前端代码里始终不存在 key。
  *
  * 用法（key 只存在于进程环境变量）：
- *   HERMES_API_SERVER_KEY=<key> npm run dev
- * 或从宿主机的 hermes .env 里 source 出来再跑。
+ *   set -a && . /opt/data/.env && set +a
+ *   node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173
  */
 const API_TARGET = process.env.HERMES_API_DEV_URL || 'http://127.0.0.1:8642'
-// Hermes 容器里的变量名是 API_SERVER_KEY；HERMES_API_SERVER_KEY 只是历史别名，两个都认
+// Hermes 容器里的变量名是 API_SERVER_KEY（HERMES_API_SERVER_KEY 只是历史别名）
 const API_KEY = process.env.API_SERVER_KEY || process.env.HERMES_API_SERVER_KEY || ''
 
-if (!API_KEY) {
-  console.warn(
-    '[vite] 未检测到 API_SERVER_KEY —— /api 反代将不带鉴权头，请求会 401。\n' +
-      '       启动方式：set -a && . <hermes .env> && set +a && node node_modules/vite/bin/vite.js',
-  )
-}
+export default defineConfig(({ command }) => {
+  if (command === 'serve' && !API_KEY) {
+    console.warn(
+      '[vite] 未检测到 API_SERVER_KEY —— /api 反代不带鉴权头，请求会 401。\n' +
+        '       启动：set -a && . /opt/data/.env && set +a && node node_modules/vite/bin/vite.js',
+    )
+  }
 
-const upstream = {
-  target: API_TARGET,
-  changeOrigin: true,
-  // 关键：SSE 不能被缓冲，http-proxy 默认逐块转发，这里额外声明禁用压缩
-  headers: {
-    ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
-    'Accept-Encoding': 'identity',
-  },
-}
-
-export default defineConfig({
-  plugins: [vue()],
-  server: {
-    host: '127.0.0.1',
-    port: 5173,
-    proxy: {
-      '/api': upstream,
-      '/v1': upstream,
-      '/health': upstream,
+  const upstream = {
+    target: API_TARGET,
+    changeOrigin: true,
+    headers: {
+      ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
+      // 关键：SSE 要逐块转发，不能让链路做压缩/缓冲
+      'Accept-Encoding': 'identity',
     },
-  },
-  build: {
-    outDir: 'dist',
-    sourcemap: false,
-    chunkSizeWarningLimit: 900,
-  },
+  }
+
+  return {
+    plugins: [vue()],
+    server: {
+      host: '127.0.0.1',
+      port: 5173,
+      proxy: {
+        '/api': upstream,
+        '/v1': upstream,
+        '/health': upstream,
+      },
+    },
+    build: {
+      outDir: 'dist',
+      sourcemap: false,
+      chunkSizeWarningLimit: 600,
+    },
+    test: {
+      environment: 'jsdom',
+      include: ['src/**/*.spec.ts'],
+      restoreMocks: true,
+    },
+  }
 })

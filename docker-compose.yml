@@ -1,0 +1,27 @@
+# Docker Compose —— 与 hermes 容器同网络直连，不映射宿主机端口（对外由 Caddy 反代）
+services:
+  chatlite:
+    build: .
+    image: hermes-chat-lite:latest
+    container_name: chatlite
+    restart: unless-stopped
+    environment:
+      # 密钥来自同目录 .env（compose 自动读取做 ${VAR} 替换），不写明文、不入库。
+      # 值 = hermes 容器环境里的 API_SERVER_KEY（同一个 key）。
+      - HERMES_API_SERVER_KEY=${HERMES_API_SERVER_KEY:?请在同目录 .env 里设置 HERMES_API_SERVER_KEY}
+    expose:
+      - "80"
+    networks:
+      - net_openclaw
+    healthcheck:
+      # 走完整链路（nginx → hermes:8642），能查出来反代或密钥有问题
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  # 与 hermes 容器共用（外部已存在），端口不暴露宿主机
+  net_openclaw:
+    external: true

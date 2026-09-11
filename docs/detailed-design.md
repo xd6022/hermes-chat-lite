@@ -13,18 +13,20 @@
 | 阶段 | 状态 | 交付物 | 验收方式 |
 | --- | --- | --- | --- |
 | P0 工程搭建 | ✅ 完成（2026-09-11 实测） | `package.json` `vite.config.ts` `tailwind.config.js` `src/api/{types,hermes,sse}.ts` | dev server 200；反代注入 key 后 `/api/sessions` 返回 200 + 真实会话 |
-| P1 只读链路 | ⬜ 未开始 | `Sidebar.vue` `ChatWindow.vue` `MessageItem.vue` | 左侧出现真实会话，点击能渲染历史消息与代码高亮 |
-| P2 写链路 | ⬜ 未开始 | `InputBox.vue` + 新建会话 | Enter 发送，消息立刻上屏，Shift+Enter 换行 |
-| P3 流式 | ⬜ 未开始 | `src/api/sse.ts` `RunStatus.vue` + 流式渲染 | 回复逐字出现；**工具执行可见 + 明确完成态**（见 5.6） |
-| P4 部署 | ⬜ 未开始 | `Dockerfile` `nginx.conf` `docker-compose.yml` `README.md` | 浏览器打开域名即可聊天 |
-| P5 安全加固（可选） | ⬜ 未开始 | Caddy basic_auth | 未带口令访问返回 401 |
+| P1 只读链路 | ✅ 完成 | `Sidebar.vue` `ChatWindow.vue` `MessageItem.vue` `lib/*` | 集成用例：侧栏渲染真实标题+日期分组、点会话加载历史且 tool/空 assistant 被滤掉 |
+| P2 写链路 | ✅ 完成 | `InputBox.vue` + `newChat()` | 输入规则 7 项全过（Enter/Shift+Enter/输入法合成/生成中不重发/空内容） |
+| P3 流式 | ✅ 完成 | `src/api/sse.ts` `RunStatus.vue` `stores/chat.ts` | 真实接口端到端跑通（delta 流式 + tool 事件 + run.completed）；半帧切片/中文多字节切分/keepalive 用例全过 |
+| P4 部署 | 🟡 文件完成，**待宿主机验证** | `Dockerfile` `nginx.conf` `docker-compose.yml` `.env.example` | 本容器未挂 docker daemon，无法在此构建；命令见 §8 |
+| P5 安全加固 | ⬜ 未开始（已定用 basic_auth） | Caddy basic_auth | 未带口令返回 401 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
 ### 0.1 跨会话续接（接手先读这段，再读对应阶段章节）
 
 **路径**：`/opt/data/hermes-chat-lite`（远程 `git@github.com:xd6022/hermes-chat-lite.git`，主分支 `main`）
-**下一步**：P1 只读链路 —— 顺序是 `lib/markdown.ts` → `lib/format.ts` → `stores/chat.ts` → `App.vue` 骨架 → `Sidebar.vue` → `ChatWindow.vue` + `MessageItem.vue`（`App.vue` 目前是临时自检页，P1 会整体替换）。
+**当前进度**：P0～P3 已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
+
+**下一步**：① 宿主机 `docker compose up -d --build` + Caddy 配置 → 真机点一遍（浏览器验证是唯一没做的一环，本容器 browser-use 守护进程卡死）；② P5 Caddy basic_auth；③ v1.1 候选：消息分页加载、深色主题、`run.completed.messages` 回填工具结果到时间线。
 
 **可复制命令**：
 
@@ -441,7 +443,7 @@ export interface UiMessage {
 
 - `textarea` 高度自适应（1～8 行，`scrollHeight` 计算）。
 - Enter 发送、Shift+Enter 换行；**中文输入法合成期间（`isComposing`）不触发发送**（必须处理，否则拼音回车会误发）。
-- 生成中：发送按钮变「停止」（方形图标），点击 `stop()`；输入框禁用。
+- 生成中：发送按钮变「停止」，点击 `stop()`；**输入框保持可输入**（只禁用发送，方便先打下一句），Enter 不再触发发送。
 - 右下角小字：`Hermes 可能会出错，请核对重要信息`（可选，一句话即可）。
 
 ### 5.6 `RunStatus.vue` —— 执行可观测性（针对 Open WebUI 的核心痛点）
@@ -480,8 +482,9 @@ export interface UiMessage {
 
 点顶部「Settings」右侧滑出小面板，只有三项：
 1. 连接状态：绿点 + `Hermes v0.20.4`（数据来自 `GET /health`）+ 刷新按钮。
-2. 主题：浅色 / 深色 / 跟随系统（Tailwind `dark` class 切换，存 `localStorage`）。
-3. 关于：版本号、一组快捷键说明。
+2. 关于：版本号、一组快捷键说明。
+
+（v1 不做深色主题：单主题浅色，避免代码高亮主题与配色分叉。深色留 v1.1。）
 
 **明确不做**：模型切换、Prompt 管理、Agent 配置（需求第七条禁止项）。
 
@@ -608,6 +611,17 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | 6 | Markdown 正常显示 | 标题/列表/表格/引用 |
 | 7 | 代码块高亮 | 多语言代码块有色，复制按钮可用 |
 | 8 | Docker 可部署 | `docker compose up -d` 后域名可访问 |
+
+### 10.1 验证证据（2026-09-11）
+
+| 验证项 | 怎么验的 | 结果 |
+| --- | --- | --- |
+| SSE 解析器打真实接口 | node 直接跑 `src/api/sse.ts`（模拟反代注入鉴权头）打 `POST /api/sessions/{id}/chat/stream` | ✅ 事件序列 `run.started → message.started → tool.started → tool.completed → assistant.delta → tool.progress → assistant.completed → run.completed → done`；delta 分片 2（真流式）；`read_file` 工具事件收到；`run.completed` 收到 |
+| 历史消息过滤 | 同上，读回 `GET /messages` | ✅ 原始 4 条 → 界面可见 2 条，最后一条是 assistant |
+| 前端运行时 | `vitest`（jsdom + @vue/test-utils） | ✅ 28/28 通过（半帧切片、中文切在多字节中间、keepalive、过滤规则、输入法、App 集成） |
+| 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 271KB（gzip 106KB） |
+| 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
+| Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |
 
 ---
 

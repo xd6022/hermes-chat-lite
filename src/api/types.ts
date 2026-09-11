@@ -72,6 +72,27 @@ export interface SessionResponse {
   session: HermesSession
 }
 
+/** DELETE /api/sessions/{id} —— **硬删除**，返回被删的 id */
+export interface DeleteSessionResponse {
+  object: 'hermes.session.deleted'
+  id: string
+  deleted: boolean
+}
+
+/**
+ * PATCH /api/sessions/{id} 的字段白名单（实测：给白名单外的字段直接 400
+ * `Unsupported session fields: xxx`；布尔字段给字符串会 400）。
+ * 本项目只用 title；pinned/hidden/archived 是桌面端侧栏的东西，v1 不做。
+ */
+export interface SessionPatch {
+  title?: string | null
+  pinned?: boolean
+  archived?: boolean
+  hidden?: boolean
+  unread?: boolean
+  end_reason?: string
+}
+
 /**
  * run.completed 的 usage（实测：**每轮**值，不是会话累计）。
  * 口径核对：usage.input_tokens = 本轮总输入 = 未命中Δ + 缓存命中Δ

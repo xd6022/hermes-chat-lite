@@ -9,11 +9,13 @@
 import { reactive } from 'vue'
 import {
   createSession,
+  deleteSession as deleteSessionApi,
   getMessages,
   getSession,
   getSessions,
   health,
   HermesApiError,
+  renameSession as renameSessionApi,
   streamChat,
 } from '../api/hermes'
 import { isCompactionNote } from '../lib/messages'
@@ -317,6 +319,61 @@ export async function newChat(): Promise<string | null> {
   } catch (e) {
     store.bootError = msgOf(e)
     return null
+  }
+}
+
+/** 标题长度上限（服务端实测：超过 100 字符 → 400 `invalid_title`） */
+export const TITLE_MAX = 100
+
+/** 把服务端的 title 报错翻成人话（原文带 session id，丢给用户没意义） */
+function titleError(e: unknown): string {
+  const raw = msgOf(e)
+  if (/already in use/i.test(raw)) return '标题已被别的会话占用，换一个'
+  if (/too long/i.test(raw)) return `标题太长（最多 ${TITLE_MAX} 字）`
+  return raw
+}
+
+/**
+ * 重命名（PATCH）。成功返回 null，失败返回**给行内显示**的文案。
+ * 刻意不写 store.bootError —— 那是全局横幅，改名失败属于行级错误，就地提示。
+ *
+ * 注意：服务端有标题唯一约束，重名必定 400；这是正常的业务拒绝，不是异常。
+ */
+export async function renameSession(id: string, title: string): Promise<string | null> {
+  const next = title.trim()
+  try {
+    const res = await renameSessionApi(id, next)
+    const row = store.sessions.find((s) => s.id === id)
+    if (row) row.title = res.session?.title ?? (next || null)
+    return null
+  } catch (e) {
+    return titleError(e)
+  }
+}
+
+/**
+ * 删除**单个**会话（硬删除、不可恢复）。
+ *
+ * 纪律（2026-09-11 真事故的教训）：只允许"用户点中某一行 → 二次确认 → 删这一行"。
+ * 绝不提供按 source/条件批量删的入口 —— 服务端也**没有**批量端点，别在前端自己拼。
+ */
+export async function removeSession(id: string): Promise<string | null> {
+  try {
+    await deleteSessionApi(id)
+    store.sessions = store.sessions.filter((s) => s.id !== id)
+    if (store.currentId === id) {
+      // 删的正是当前打开的会话 → 回到空态，别留着一个已经不存在的 id
+      store.currentId = null
+      store.messages = []
+      loadedIds = new Set()
+      store.rawCount = 0
+      store.hasMoreHistory = false
+      store.run.phase = 'idle'
+      store.run.timeline = []
+    }
+    return null
+  } catch (e) {
+    return msgOf(e)
   }
 }
 

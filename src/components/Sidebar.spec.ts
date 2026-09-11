@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import Sidebar from './Sidebar.vue'
 import { store } from '../stores/chat'
@@ -13,6 +13,13 @@ function session(id: string, title: string): HermesSession {
     last_active: 1789123327.23,
     message_count: 4,
   }
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })
 }
 
 function mountSidebar(collapsed = false) {
@@ -92,5 +99,161 @@ describe('侧栏结构', () => {
 
     const normal = mountSidebar(false)
     expect(normal.find('aside').classes()).not.toContain('md:hidden')
+  })
+})
+
+describe('侧栏行内操作：重命名', () => {
+  let calls: { method: string; url: string; body?: string }[] = []
+
+  function stubApi(patcher?: (body: { title: string }) => Response) {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const body = init?.body ? JSON.parse(String(init.body)) : undefined
+        calls.push({ method, url, body: init?.body as string })
+        if (method === 'PATCH') {
+          if (patcher) return patcher(body)
+          return jsonResponse({
+            object: 'hermes.session',
+            session: { id: 's1', source: 'tui', title: body.title, started_at: 1, last_active: 1 },
+          })
+        }
+        if (method === 'DELETE') {
+          return jsonResponse({ object: 'hermes.session.deleted', id: 's1', deleted: true })
+        }
+        throw new Error(`未预期的请求: ${method} ${url}`)
+      }),
+    )
+  }
+
+  beforeEach(() => {
+    calls = []
+    store.streaming = false
+    stubApi()
+  })
+
+  it('点铅笔 → 原位输入框（预填当前标题）→ Enter 保存：发 PATCH 且列表标题就地更新', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="重命名"]')[0].trigger('click')
+
+    const input = w.find('[data-edit-id="s1"]')
+    expect(input.exists()).toBe(true)
+    expect((input.element as HTMLInputElement).value).toBe('股票分析')
+
+    await input.setValue('新标题')
+    await input.trigger('keydown', { key: 'Enter' })
+
+    await vi.waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true))
+    const patched = calls.find((c) => c.method === 'PATCH')!
+    expect(patched.url).toBe('/api/sessions/s1')
+    expect(JSON.parse(patched.body!)).toEqual({ title: '新标题' })
+
+    await vi.waitFor(() => {
+      expect(w.find('nav').text()).toContain('新标题')
+      expect(w.find('[data-edit-id="s1"]').exists()).toBe(false) // 退出编辑态
+    })
+  })
+
+  it('服务端拒绝（重名）→ 行内红字提示，且保持编辑态让用户改', async () => {
+    stubApi(() =>
+      new Response(
+        JSON.stringify({
+          error: { message: "Title '股票分析' is already in use by session s9", code: 'invalid_title' },
+        }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="重命名"]')[0].trigger('click')
+    await w.find('[data-edit-id="s1"]').setValue('股票分析')
+    await w.find('[data-edit-id="s1"]').trigger('keydown', { key: 'Enter' })
+
+    await vi.waitFor(() => expect(w.text()).toContain('标题已被别的会话占用'))
+    expect(w.find('[data-edit-id="s1"]').exists()).toBe(true) // 没有退出编辑态
+    expect(store.sessions[0].title).toBe('股票分析') // 本地标题没被改坏
+  })
+
+  it('Esc 取消：不发任何请求', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="重命名"]')[0].trigger('click')
+    await w.find('[data-edit-id="s1"]').setValue('不要保存')
+    await w.find('[data-edit-id="s1"]').trigger('keydown', { key: 'Escape' })
+
+    expect(w.find('[data-edit-id="s1"]').exists()).toBe(false)
+    expect(calls.length).toBe(0)
+    expect(w.find('nav').text()).toContain('股票分析')
+  })
+})
+
+describe('侧栏行内操作：删除', () => {
+  let calls: { method: string; url: string }[] = []
+
+  beforeEach(() => {
+    calls = []
+    store.streaming = false
+    store.currentId = null
+    store.messages = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const method = init?.method ?? 'GET'
+        calls.push({ method, url: String(input) })
+        return jsonResponse({ object: 'hermes.session.deleted', id: 's1', deleted: true })
+      }),
+    )
+  })
+
+  const confirmBtn = (w: ReturnType<typeof mountSidebar>) =>
+    w.findAll('button').find((b) => b.text() === '删除')!
+
+  it('先原位确认（文案带标题），点"取消"不发请求', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="删除"]')[0].trigger('click')
+
+    expect(w.text()).toContain('删除「股票分析」？')
+    expect(w.text()).toContain('不可恢复')
+
+    await w.findAll('button').find((b) => b.text() === '取消')!.trigger('click')
+    expect(calls.length).toBe(0)
+    expect(w.text()).not.toContain('删除「股票分析」？')
+  })
+
+  it('确认后发 DELETE，并把该行从列表移除', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="删除"]')[0].trigger('click')
+    await confirmBtn(w).trigger('click')
+
+    await vi.waitFor(() => expect(calls.some((c) => c.method === 'DELETE')).toBe(true))
+    expect(calls.find((c) => c.method === 'DELETE')!.url).toBe('/api/sessions/s1')
+    await vi.waitFor(() => {
+      expect(w.find('nav').text()).not.toContain('股票分析')
+      expect(w.find('nav').text()).toContain('Docker 网络问题') // 其它会话不受影响
+    })
+    expect(store.sessions.length).toBe(2)
+  })
+
+  it('删掉的正是当前打开的会话 → 回到空态（currentId 与消息都清空）', async () => {
+    store.currentId = 's1'
+    store.messages = [{ key: 'k1', role: 'user', content: '一些内容' }]
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="删除"]')[0].trigger('click')
+    await confirmBtn(w).trigger('click')
+
+    await vi.waitFor(() => expect(store.currentId).toBeNull())
+    expect(store.messages.length).toBe(0)
+    expect(store.sessions.length).toBe(2)
+  })
+
+  it('正在流式输出的当前会话：改名/删除按钮禁用（服务端那一轮还在写它）', async () => {
+    store.streaming = true
+    store.currentId = 's1'
+    const w = mountSidebar()
+
+    expect(w.findAll('button[aria-label="重命名"]')[0].attributes('disabled')).toBeDefined()
+    expect(w.findAll('button[aria-label="删除"]')[0].attributes('disabled')).toBeDefined()
+    // 其它会话不受影响
+    expect(w.findAll('button[aria-label="删除"]')[1].attributes('disabled')).toBeUndefined()
   })
 })

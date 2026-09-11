@@ -14,6 +14,7 @@
 import { postSse, type SseHandler } from './sse'
 import type {
   CreateSessionResponse,
+  DeleteSessionResponse,
   HealthResponse,
   MessageListResponse,
   SessionResponse,
@@ -105,6 +106,34 @@ export function getSession(sessionId: string): Promise<SessionResponse> {
 /** 健康检查（Settings 面板的连接状态用）。 */
 export function health(): Promise<HealthResponse> {
   return request<HealthResponse>('/health')
+}
+
+/**
+ * 重命名会话（PATCH）。服务端会校验，可能 400（code 都是 `invalid_title`）：
+ *  - 重名 → `Title 'x' is already in use by session <id>`（标题有**唯一约束**）
+ *  - 超长 → `Title too long (N chars, max 100)`
+ *  - 空串 / null → **合法**，等价于清空标题（界面回落到显示 preview）
+ *
+ * 手动改名会记 `user` 来源（provenance），Hermes 的自动标题**不会**再覆盖它
+ *（依据：`hermes_state.py:8161 set_session_title()` 的注释 —— "records user
+ * provenance, so auto-titling will never replace the result"）。
+ */
+export function renameSession(sessionId: string, title: string): Promise<SessionResponse> {
+  return request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  })
+}
+
+/**
+ * 删除会话。**硬删除、不可恢复**：会话与全部消息一起消失，没有回收站
+ *（MySQL 归档 cron 每天 21:00 才跑一次，之前删的东西没有第二份副本）。
+ * 服务端**没有批量端点**，只能一个一个删。
+ */
+export function deleteSession(sessionId: string): Promise<DeleteSessionResponse> {
+  return request<DeleteSessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  })
 }
 
 /**

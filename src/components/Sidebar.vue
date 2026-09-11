@@ -7,15 +7,31 @@
  * （实测 /api/sessions 只认 limit/offset/source/include_children，
  *  库里虽有 FTS5 索引但只给 CLI 用），所以只能对已取到的会话标题做关键字匹配。
  * 取数上限见 stores/chat.ts 的 loadSessions（服务端上限 200 条）。
+ *
+ * 行内操作（v1.5 加）：
+ *  - **重命名**：原位变输入框（不用原生 prompt —— 原生动弹框与本应用风格不搭）
+ *  - **删除**：原位二次确认，且确认文案**带上标题**（删前必须能看清删的是谁）
+ * 这两条都受"硬删除不可恢复 + 曾经误删过真实会话"的约束，所以：
+ *  ① 只有单个删除，没有任何批量/按条件删除的入口；
+ *  ② 正在跑的那一轮所属会话禁止改名/删除（服务端 turn 还在写它）。
  */
-import { computed, ref } from 'vue'
-import { newChat, openSession, store } from '../stores/chat'
+import { computed, nextTick, ref } from 'vue'
+import { newChat, openSession, removeSession, renameSession, store, TITLE_MAX } from '../stores/chat'
 import { displayTitle, formatClock, groupSessions } from '../lib/format'
+import type { HermesSession } from '../api/types'
 
 defineProps<{ open: boolean; collapsed: boolean }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
 const query = ref('')
+
+/* ---- 行内编辑 / 删除确认状态（同时只会有一个） ---- */
+const editingId = ref<string | null>(null)
+const editText = ref('')
+const editError = ref('')
+const confirmingId = ref<string | null>(null)
+const deleteError = ref('')
+const busyId = ref<string | null>(null)
 
 /** 关键字过滤：标题 / 预览 / 会话 id 都算命中（id 便于按 id 精确定位） */
 const filtered = computed(() => {
@@ -31,6 +47,11 @@ const groups = computed(() => groupSessions(filtered.value))
 const searching = computed(() => query.value.trim().length > 0)
 const noMatch = computed(() => searching.value && filtered.value.length === 0)
 
+/** 正在流式输出的会话不许动：服务端那一轮还在写它 */
+function locked(s: HermesSession): boolean {
+  return store.streaming && store.currentId === s.id
+}
+
 async function pick(id: string): Promise<void> {
   if (id !== store.currentId) await openSession(id)
   emit('close')
@@ -38,6 +59,61 @@ async function pick(id: string): Promise<void> {
 
 async function startNew(): Promise<void> {
   await newChat()
+  emit('close')
+}
+
+function startRename(s: HermesSession): void {
+  confirmingId.value = null
+  editingId.value = s.id
+  editText.value = s.title ?? ''
+  editError.value = ''
+  void nextTick(() => {
+    // v-for 里的 template ref 会变成数组，所以按数据属性查更省心
+    const el = document.querySelector<HTMLInputElement>(`[data-edit-id="${s.id}"]`)
+    el?.focus()
+    el?.select()
+  })
+}
+
+function cancelRename(): void {
+  editingId.value = null
+  editError.value = ''
+}
+
+async function saveRename(id: string): Promise<void> {
+  if (busyId.value) return
+  busyId.value = id
+  const err = await renameSession(id, editText.value)
+  busyId.value = null
+  if (err) {
+    editError.value = err // 保持编辑态，让用户就地改
+    return
+  }
+  editingId.value = null
+  editError.value = ''
+}
+
+function startDelete(id: string): void {
+  editingId.value = null
+  confirmingId.value = id
+  deleteError.value = ''
+}
+
+function cancelDelete(): void {
+  confirmingId.value = null
+  deleteError.value = ''
+}
+
+async function doDelete(id: string): Promise<void> {
+  if (busyId.value) return
+  busyId.value = id
+  const err = await removeSession(id)
+  busyId.value = null
+  if (err) {
+    deleteError.value = err
+    return
+  }
+  confirmingId.value = null
   emit('close')
 }
 </script>
@@ -122,25 +198,128 @@ async function startNew(): Promise<void> {
         </p>
         <div v-for="g in groups" :key="g.bucket" class="mb-2">
           <div class="px-2 py-1 text-[11px] font-medium text-gray-400 dark:text-gray-500">{{ g.label }}</div>
-          <button
+
+          <div
             v-for="s in g.items"
             :key="s.id"
-            type="button"
-            class="group flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition"
-            :class="
-              s.id === store.currentId
-                ? 'bg-gray-200/80 text-gray-900 dark:bg-gray-700/70 dark:text-gray-100'
-                : 'text-gray-600 hover:bg-gray-200/50 dark:text-gray-300 dark:hover:bg-gray-800'
-            "
-            @click="pick(s.id)"
+            class="group flex items-center gap-1 rounded-lg"
+            :class="s.id === store.currentId ? 'bg-gray-200/80 dark:bg-gray-700/70' : ''"
           >
-            <span class="min-w-0 flex-1 truncate" :title="displayTitle(s)">{{ displayTitle(s) }}</span>
-            <span
-              class="shrink-0 text-[11px] text-gray-400 opacity-0 transition group-hover:opacity-100 dark:text-gray-500"
-            >
-              {{ formatClock(s.last_active || s.started_at) }}
-            </span>
-          </button>
+            <!-- ① 重命名态：原位输入框 -->
+            <div v-if="editingId === s.id" class="flex min-w-0 flex-1 flex-col px-2 py-1">
+              <div class="flex items-center gap-1">
+                <input
+                  v-model="editText"
+                  :data-edit-id="s.id"
+                  :maxlength="TITLE_MAX"
+                  :disabled="busyId === s.id"
+                  class="min-w-0 flex-1 rounded border border-gray-300 bg-white px-1.5 py-0.5 text-sm text-gray-900 outline-none focus:border-gray-400 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                  @keydown.enter.prevent="saveRename(s.id)"
+                  @keydown.esc.prevent="cancelRename()"
+                />
+                <button
+                  type="button"
+                  class="shrink-0 rounded p-1 text-green-600 transition hover:bg-gray-200/70 dark:hover:bg-gray-700"
+                  title="保存"
+                  aria-label="保存标题"
+                  :disabled="busyId === s.id"
+                  @click="saveRename(s.id)"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M5 13l4 4L19 7" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="shrink-0 rounded p-1 text-gray-400 transition hover:bg-gray-200/70 dark:hover:bg-gray-700"
+                  title="取消"
+                  aria-label="取消重命名"
+                  @click="cancelRename()"
+                >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M6 6l12 12M18 6L6 18" stroke-linecap="round" />
+                  </svg>
+                </button>
+              </div>
+              <p v-if="editError" class="mt-0.5 text-[11px] text-red-600 dark:text-red-400">{{ editError }}</p>
+            </div>
+
+            <!-- ② 删除确认态：**带上标题**，删前看清删的是谁 -->
+            <div v-else-if="confirmingId === s.id" class="flex min-w-0 flex-1 flex-col px-2 py-1">
+              <div class="flex items-center gap-1">
+                <span class="min-w-0 flex-1 truncate text-xs text-gray-700 dark:text-gray-200">
+                  删除「{{ displayTitle(s) }}」？
+                </span>
+                <button
+                  type="button"
+                  class="shrink-0 rounded bg-red-600 px-1.5 py-0.5 text-xs text-white transition hover:bg-red-500 disabled:opacity-60"
+                  :disabled="busyId === s.id"
+                  @click="doDelete(s.id)"
+                >
+                  {{ busyId === s.id ? '删除中' : '删除' }}
+                </button>
+                <button
+                  type="button"
+                  class="shrink-0 rounded px-1.5 py-0.5 text-xs text-gray-500 transition hover:bg-gray-200/70 dark:text-gray-400 dark:hover:bg-gray-700"
+                  @click="cancelDelete()"
+                >
+                  取消
+                </button>
+              </div>
+              <p class="mt-0.5 text-[11px] text-amber-600 dark:text-amber-400">不可恢复（含全部消息）</p>
+              <p v-if="deleteError" class="mt-0.5 text-[11px] text-red-600 dark:text-red-400">{{ deleteError }}</p>
+            </div>
+
+            <!-- ③ 正常态：标题 + 行内操作 -->
+            <template v-else>
+              <button
+                type="button"
+                class="min-w-0 flex-1 truncate rounded-lg px-2 py-1.5 text-left text-sm transition"
+                :class="
+                  s.id === store.currentId
+                    ? 'text-gray-900 dark:text-gray-100'
+                    : 'text-gray-600 hover:bg-gray-200/50 dark:text-gray-300 dark:hover:bg-gray-800'
+                "
+                :title="`${displayTitle(s)} · ${formatClock(s.last_active || s.started_at)}`"
+                @click="pick(s.id)"
+              >
+                {{ displayTitle(s) }}
+              </button>
+
+              <!--
+                移动端常显（触屏没有 hover，关键操作必须直接可见）；
+                桌面端默认 invisible（既看不见也点不到），hover 该行才出现。
+              -->
+              <span
+                class="flex shrink-0 items-center gap-0.5 pr-1 visible md:invisible md:group-hover:visible"
+              >
+                <button
+                  type="button"
+                  class="rounded p-1 text-gray-400 transition hover:bg-gray-200/70 hover:text-gray-700 disabled:opacity-30 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+                  title="重命名"
+                  aria-label="重命名"
+                  :disabled="locked(s)"
+                  @click="startRename(s)"
+                >
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 20h4L19 9l-4-4L4 16v4z" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="rounded p-1 text-gray-400 transition hover:bg-red-100 hover:text-red-600 disabled:opacity-30 dark:hover:bg-red-950/50 dark:hover:text-red-400"
+                  title="删除"
+                  aria-label="删除"
+                  :disabled="locked(s)"
+                  @click="startDelete(s.id)"
+                >
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M5 7h14M10 7V5h4v2M6 7l1 12h10l1-12" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>
+              </span>
+            </template>
+          </div>
         </div>
       </template>
     </nav>

@@ -14,8 +14,10 @@ services:
     networks:
       - net_openclaw
     healthcheck:
-      # 走完整链路（nginx → hermes:8642），能查出来反代或密钥有问题
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      # ★ 必须打【需要鉴权】的端点：
+      #   /health 不带 key 也返回 200（实测），密钥填错照样 healthy → 验不出问题。
+      #   /api/sessions 无 key / 错 key 返回 401（实测）→ 能真正验出"反代注入的 key 有效"。
+      test: ["CMD-SHELL", "wget -qO- 'http://127.0.0.1/api/sessions?limit=1' >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

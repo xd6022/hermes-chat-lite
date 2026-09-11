@@ -653,4 +653,5 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 16. **`tool.started` 的 `args` 是脱敏后的展示值** → 可以直接显示，但别当作真实参数入库/回传。
 17. **`assistant.completed.content` 必须覆盖 delta 拼接** → 实测：delta 原文是 `["\n\nhermes-chat","-lite"]`，`completed` 是 `"hermes-chat-lite"`。**delta 会带前导换行等杂质**，追加会多出空行、少字就在所难免。以 `completed` 覆盖是必须的，不是防御性编程。
 18. **计时器别用事件里的 `ts`** → 用 `performance.now()` 本地算，否则时间会跳。
+20. **健康检查不能打 `/health`** → 实测 `/health` 不带 key 也返回 200，密钥填错照样 healthy，等于验不出问题；要打 `GET /api/sessions?limit=1`（无 key/错 key 返回 401），才能同时验证反代与密钥有效。
 19. **完成态必须由事件显式判定** → 见 5.6 的判定表；"界面不再变化"≠"已完成"，这正是 Open WebUI 让您困惑的地方。

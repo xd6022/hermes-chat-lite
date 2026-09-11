@@ -52,9 +52,20 @@ npm run build                                    # 产物约 271KB（gzip 106KB�
 
 ```bash
 cd <部署目录>/hermes-chat-lite
-printf 'HERMES_API_SERVER_KEY=%s\n' '<hermes 的 API_SERVER_KEY>' > .env && chmod 600 .env
+
+# 1) 写 .env —— 从 hermes 部署目录的 .env 自动取值（两个可能的变量名都兼容）
+#    ⛔ 不要照抄 .env.example 里的占位符：照抄 = 所有接口 401（页面能开、侧栏空）
+HERMES_DIR=<hermes 部署目录>
+KEY=$(grep -hE '^[[:space:]]*(HERMES_)?API_SERVER_KEY=' "$HERMES_DIR/.env" | head -1 | sed 's/^[^=]*=//' | tr -d '\042\047\r ')
+printf 'HERMES_API_SERVER_KEY=%s\n' "$KEY" > .env && chmod 600 .env
+
+# 2) 自检：长度必须是 64（不是 64 就说明取错了）
+awk -F= '/^HERMES_API_SERVER_KEY=/{print length($2)}' .env
+
+# 3) 起容器
 docker compose up -d --build
-docker compose ps          # 期望 chatlite 为 healthy（healthcheck 会走 nginx → hermes:8642 全链路）
+docker compose ps          # 期望 healthy：healthcheck 打的是【需要鉴权】的 /api/sessions，
+                           # 所以它同时验证了 nginx 反代 + 密钥有效（/health 不鉴权，验不出来）
 docker compose logs --tail=30 chatlite
 ```
 
@@ -72,7 +83,7 @@ chat.<域名> {
 ```
 
 **上线自检**：
-1. 域名打开 → 顶栏绿点 + `v0.20.4`，侧栏出现真实会话
+1. 域名打开 → 顶栏绿点 + `v0.20.4`，侧栏出现真实会话（侧栏空 + 提示"接口密钥无效或未注入" = .env 的 key 不对）
 2. 点会话 → 历史消息渲染正常（无 tool/JSON 噪音），代码块高亮
 3. 发一条消息 → 文字**逐字**出现；长任务时状态条显示 `🔧 正在使用 xxx…`，结束后常驻 `✓ 完成 · Ns · M 个工具调用`（若这里变成"等全部返回才显示"，就是 nginx 少了 `proxy_buffering off`）
 

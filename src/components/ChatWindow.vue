@@ -67,11 +67,13 @@ function retry(): void {
   <section class="flex min-h-0 min-w-0 flex-1 flex-col">
     <!-- 错误横幅：创建会话 / 拉列表失败时必须可见（否则点发送会"没反应"） -->
     <div v-if="store.bootError" class="mx-auto w-full max-w-chat px-4 pt-3">
-      <div class="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+      <div
+        class="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"
+      >
         <span class="flex-1 break-words">{{ store.bootError }}</span>
         <button
           type="button"
-          class="shrink-0 rounded px-2 py-0.5 text-xs transition hover:bg-red-100"
+          class="shrink-0 rounded px-2 py-0.5 text-xs transition hover:bg-red-100 dark:hover:bg-red-900/40"
           @click="retry()"
         >
           重试
@@ -88,7 +90,7 @@ function retry(): void {
       >
         <div class="text-center">
           <div class="text-2xl font-semibold">有什么可以帮您？</div>
-          <p class="mt-1 text-sm text-gray-400">
+          <p class="mt-1 text-sm text-gray-400 dark:text-gray-500">
             {{ store.currentId ? '这个会话还没有消息' : '从一个新会话开始' }}
           </p>
         </div>
@@ -97,7 +99,7 @@ function retry(): void {
             v-for="q in EXAMPLES"
             :key="q"
             type="button"
-            class="rounded-xl border border-gray-200 px-3 py-2 text-left text-sm text-gray-600 transition hover:border-gray-300 hover:bg-gray-50"
+            class="rounded-xl border border-gray-200 px-3 py-2 text-left text-sm text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-300 dark:hover:border-gray-700 dark:hover:bg-gray-900"
             @click="inputRef?.fill(q)"
           >
             {{ q }}
@@ -107,12 +109,20 @@ function retry(): void {
 
       <!-- 加载态 -->
       <div v-else-if="store.messagesLoading" class="mx-auto max-w-chat space-y-3 px-4 py-6">
-        <div v-for="i in 3" :key="i" class="h-4 animate-pulse rounded bg-gray-100" :style="{ width: `${90 - i * 15}%` }" />
+        <div
+          v-for="i in 3"
+          :key="i"
+          class="h-4 animate-pulse rounded bg-gray-100 dark:bg-gray-800"
+          :style="{ width: `${90 - i * 15}%` }"
+        />
       </div>
 
       <!-- 消息 -->
       <div v-else class="mx-auto max-w-chat space-y-6 px-4 py-6">
-        <p v-if="truncated" class="rounded-lg bg-gray-50 px-3 py-2 text-center text-xs text-gray-400">
+        <p
+          v-if="truncated"
+          class="rounded-lg bg-gray-50 px-3 py-2 text-center text-xs text-gray-400 dark:bg-gray-900 dark:text-gray-500"
+        >
           仅显示最近 100 条消息
         </p>
         <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />

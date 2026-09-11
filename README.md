@@ -4,14 +4,15 @@
 
 - 前端：Vue3 + TypeScript + Vite + Tailwind CSS，markdown-it + highlight.js
 - 无后端、无数据库、无用户体系；数据全部来自 Hermes API Server
-- 相对 Open WebUI 的关键改进：**看得见工具执行、看得见本轮结束**
+- 相对 Open WebUI 的关键改进：**看得见工具执行、看得见本轮结束、看得见每轮 token 与缓存命中**
+- 界面：会话搜索（本地标题过滤）、桌面侧栏可折叠、白天/黑夜模式（跟随系统 + 手动覆盖）
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/feasibility-analysis.md`](docs/feasibility-analysis.md) | 可行性分析：结论、实测依据、风险（暴露面）、工作量 |
-| [`docs/detailed-design.md`](docs/detailed-design.md) | 详细设计：**接手先读 §0 状态看板 + §0.1 跨会话续接**，含 API 契约、SSE 事件表、组件设计、部署、坑清单（19 条）、验证证据 |
+| [`docs/detailed-design.md`](docs/detailed-design.md) | 详细设计：**接手先读 §0 状态看板 + §0.1 跨会话续接**，含 API 契约、SSE 事件表、组件设计、部署、坑清单（26 条）、验证证据 |
 
 ## 架构
 
@@ -43,9 +44,9 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:5173/api/sessions?lim
 ## 测试 / 类型检查 / 构建
 
 ```bash
-node node_modules/vitest/vitest.mjs run          # 28 个用例：SSE 半帧切片、中文多字节切分、过滤规则、输入法、集成
+node node_modules/vitest/vitest.mjs run          # 54 个用例：SSE 半帧切片、中文多字节切分、过滤规则、输入法、集成、搜索/折叠/主题
 npm run typecheck                                # vue-tsc --noEmit
-npm run build                                    # 产物约 271KB（gzip 106KB）
+npm run build                                    # 产物约 280KB（gzip 109KB）+ CSS 25KB
 ```
 
 ## 部署（宿主机执行）
@@ -86,6 +87,7 @@ chat.<域名> {
 1. 域名打开 → 顶栏绿点 + `v0.20.4`，侧栏出现真实会话（侧栏空 + 提示"接口密钥无效或未注入" = .env 的 key 不对）
 2. 点会话 → 历史消息渲染正常（无 tool/JSON 噪音），代码块高亮
 3. 发一条消息 → 文字**逐字**出现；长任务时状态条显示 `🔧 正在使用 xxx…`，结束后消息下方常驻一行统计 `⏱ 3.6s · 输入 27.3k · 缓存 26.6k (97%) · 输出 20`（若这里变成"等全部返回才显示"，就是 nginx 少了 `proxy_buffering off`）
+4. 顶栏右侧太阳/月亮按钮 → 整站换色（刷新后保持）；左上按钮 → 桌面折叠/展开侧栏（刷新后保持）；侧栏搜索框输入关键字 → 列表实时过滤，搜不到显示 `没有匹配「…」的会话`
 
 **排错对照表**（都是实测踩过的）：
 
@@ -106,7 +108,8 @@ src/
 ├── api/       types.ts（接口类型）· hermes.ts（唯一发请求处）· sse.ts（POST+SSE 解析器）
 ├── stores/    chat.ts（轻量 reactive store + SSE 事件分发 + 完成态判定）
 ├── components/ Sidebar · ChatWindow · MessageItem · InputBox · RunStatus
-└── lib/       markdown.ts（按需注册高亮语言）· format.ts（时间/分组）
+└── lib/       markdown.ts（按需注册高亮语言）· format.ts（时间/分组）· theme.ts（白天/黑夜）
+     test-setup.ts   测试环境补 localStorage（见 §12 坑 24）
 ```
 
 提交历史与逐阶段验证记录见 `docs/detailed-design.md` §0 / §10.1。

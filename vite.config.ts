@@ -61,6 +61,12 @@ export default defineConfig(({ command }) => {
     },
     test: {
       environment: 'jsdom',
+      // jsdom 默认 url 是 about:blank（不透明 origin），那种 origin 下 jsdom 根本不建
+      // localStorage；给个真实 url 才会建。**但它还不够** —— 见 src/test-setup.ts：
+      // vitest 里 globalThis.localStorage 已被 Node 22+ 内置的实验性实现占据，
+      // 无 --localstorage-file 时值为 undefined，会遮蔽 jsdom 的那份。
+      environmentOptions: { jsdom: { url: 'http://localhost/' } },
+      setupFiles: ['./src/test-setup.ts'],
       include: ['src/**/*.spec.ts'],
       restoreMocks: true,
     },

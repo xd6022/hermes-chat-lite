@@ -62,13 +62,13 @@ const label = computed(() => {
 const tone = computed(() => {
   switch (store.run.phase) {
     case 'done':
-      return 'text-gray-500'
+      return 'text-gray-500 dark:text-gray-400'
     case 'aborted':
-      return 'text-amber-600'
+      return 'text-amber-600 dark:text-amber-400'
     case 'error':
-      return 'text-red-600'
+      return 'text-red-600 dark:text-red-400'
     default:
-      return 'text-gray-500'
+      return 'text-gray-500 dark:text-gray-400'
   }
 })
 </script>
@@ -78,12 +78,12 @@ const tone = computed(() => {
     <div class="flex items-center gap-2 text-xs" :class="tone">
       <span v-if="active" class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
       <span class="truncate" :title="store.run.toolPreview ?? ''">{{ label }}</span>
-      <span v-if="active" class="tabular-nums text-gray-400">{{ secs }}</span>
+      <span v-if="active" class="tabular-nums text-gray-400 dark:text-gray-500">{{ secs }}</span>
 
       <button
         v-if="toolCount > 0"
         type="button"
-        class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+        class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
         @click="showTimeline = !showTimeline"
       >
         {{ showTimeline ? '收起' : `工具 ${toolCount}` }}
@@ -91,12 +91,19 @@ const tone = computed(() => {
     </div>
 
     <!-- 工具时间线：本轮到底干了什么（Open WebUI 缺的就是这块） -->
-    <ol v-if="showTimeline && toolCount > 0" class="mt-1 space-y-0.5 border-l border-gray-200 pl-3">
-      <li v-for="(s, i) in store.run.timeline" :key="i" class="flex items-baseline gap-1.5 text-xs text-gray-500">
+    <ol
+      v-if="showTimeline && toolCount > 0"
+      class="mt-1 space-y-0.5 border-l border-gray-200 pl-3 dark:border-gray-700"
+    >
+      <li
+        v-for="(s, i) in store.run.timeline"
+        :key="i"
+        class="flex items-baseline gap-1.5 text-xs text-gray-500 dark:text-gray-400"
+      >
         <span class="w-3 shrink-0 text-center">
           {{ s.status === 'run' ? '·' : s.status === 'ok' ? '✓' : '✗' }}
         </span>
-        <span class="shrink-0 font-mono text-gray-600">{{ s.name }}</span>
+        <span class="shrink-0 font-mono text-gray-600 dark:text-gray-300">{{ s.name }}</span>
         <span class="truncate" :title="s.preview">{{ s.preview }}</span>
       </li>
     </ol>

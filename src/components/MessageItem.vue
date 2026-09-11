@@ -79,7 +79,7 @@ onBeforeUnmount(() => {
   <!-- 用户消息：右侧淡灰块，保留换行 -->
   <div v-if="msg.role === 'user'" class="flex justify-end">
     <div
-      class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-gray-100 px-4 py-2 text-gray-900"
+      class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-gray-100 px-4 py-2 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
     >{{ msg.content }}</div>
   </div>
 
@@ -89,7 +89,7 @@ onBeforeUnmount(() => {
     <!-- 每轮统计：耗时 / 输入 / 输出 / 缓存命中率 -->
     <p
       v-if="msg.stats"
-      class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-5 text-gray-400"
+      class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-5 text-gray-400 dark:text-gray-500"
     >
       <span title="本轮墙钟耗时">⏱ {{ formatDurationMs(msg.stats.ms) }}</span>
       <span>· 输入 {{ formatTokens(msg.stats.inputTokens) }}</span>
@@ -98,7 +98,10 @@ onBeforeUnmount(() => {
       </span>
       <span>· 输出 {{ formatTokens(msg.stats.outputTokens) }}</span>
     </p>
-    <p v-if="msg.error" class="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+    <p
+      v-if="msg.error"
+      class="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"
+    >
       {{ msg.error }}
     </p>
   </div>

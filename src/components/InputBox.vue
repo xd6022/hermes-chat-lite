@@ -49,13 +49,15 @@ defineExpose({ fill })
 
 <template>
   <div class="mx-auto w-full max-w-chat px-4 pb-4">
-    <div class="flex items-end gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 shadow-sm focus-within:border-gray-400">
+    <div
+      class="flex items-end gap-2 rounded-2xl border border-gray-300 bg-white px-3 py-2 shadow-sm focus-within:border-gray-400 dark:border-gray-700 dark:bg-gray-900 dark:focus-within:border-gray-600"
+    >
       <textarea
         ref="el"
         v-model="text"
         rows="1"
         placeholder="给 Hermes 发消息…"
-        class="thin-scroll max-h-[40vh] flex-1 resize-none bg-transparent py-1.5 leading-6 outline-none placeholder:text-gray-400"
+        class="thin-scroll max-h-[40vh] flex-1 resize-none bg-transparent py-1.5 leading-6 outline-none placeholder:text-gray-400 dark:placeholder:text-gray-500"
         @input="autoGrow"
         @keydown="onKeydown"
         @compositionstart="composing = true"
@@ -64,7 +66,7 @@ defineExpose({ fill })
       <button
         v-if="store.streaming"
         type="button"
-        class="mb-0.5 shrink-0 rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white transition hover:bg-gray-700"
+        class="mb-0.5 shrink-0 rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white transition hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
         title="停止本轮"
         @click="stop()"
       >
@@ -73,14 +75,14 @@ defineExpose({ fill })
       <button
         v-else
         type="button"
-        class="mb-0.5 shrink-0 rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400"
+        class="mb-0.5 shrink-0 rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white dark:disabled:bg-gray-800 dark:disabled:text-gray-600"
         :disabled="!text.trim()"
         @click="submit()"
       >
         发送
       </button>
     </div>
-    <p class="mt-1.5 text-center text-[11px] text-gray-400">
+    <p class="mt-1.5 text-center text-[11px] text-gray-400 dark:text-gray-500">
       浏览器刷新会打断正在进行的回复 · Enter 发送 / Shift+Enter 换行
     </p>
   </div>

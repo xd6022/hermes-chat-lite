@@ -11,6 +11,7 @@
 
   body {
     @apply bg-white text-[15px] leading-[1.75] text-gray-900 antialiased;
+    @apply dark:bg-gray-950 dark:text-gray-100;
     overscroll-behavior-y: none;
   }
 
@@ -21,12 +22,20 @@
       font-size: 16px;
     }
   }
+
+  /* 搜索框用 type=search 才有的原生清除按钮（样式不受控），统一用自绘的 ✕ */
+  input[type='search']::-webkit-search-cancel-button,
+  input[type='search']::-webkit-search-decoration {
+    -webkit-appearance: none;
+    appearance: none;
+  }
 }
 
 /* 代码块：hljs 主题负责配色，这里只补外层间距与滚动 */
 @layer components {
   .md-body pre {
     @apply my-3 overflow-x-auto rounded-xl border border-gray-200 bg-gray-50 p-3 text-[13px] leading-[1.6];
+    @apply dark:border-gray-800 dark:bg-gray-900;
   }
 
   .md-body pre code {
@@ -35,6 +44,7 @@
 
   .md-body :not(pre) > code {
     @apply rounded bg-gray-100 px-1.5 py-0.5 font-mono text-[0.85em] text-pink-600;
+    @apply dark:bg-gray-800 dark:text-pink-400;
   }
 
   .md-body p {
@@ -72,6 +82,7 @@
 
   .md-body blockquote {
     @apply my-3 border-l-4 border-gray-200 pl-3 text-gray-600;
+    @apply dark:border-gray-700 dark:text-gray-400;
   }
 
   .md-body table {
@@ -81,14 +92,17 @@
   .md-body th,
   .md-body td {
     @apply border border-gray-200 px-2 py-1 text-left;
+    @apply dark:border-gray-800;
   }
 
   .md-body a {
     @apply text-blue-600 underline underline-offset-2 hover:text-blue-700;
+    @apply dark:text-blue-400 dark:hover:text-blue-300;
   }
 
   .md-body hr {
     @apply my-4 border-gray-200;
+    @apply dark:border-gray-800;
   }
 }
 
@@ -144,4 +158,108 @@
 }
 .thin-scroll::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* ============================================================
+ * 深色模式
+ * highlight.js 的 github.css 是浅色专用（.hljs{color:#24292e;background:#fff}），
+ * 这里不用再引一份 github-dark.css —— 那会把整个文件的选择器都带上，
+ * 无法限定只在 .dark 下生效（CSS 不支持给 @import 加作用域）。
+ * 所以手工写一份 token 调色板，选择器一律 .dark 前缀。
+ * ============================================================ */
+
+.dark .hljs {
+  background: transparent;
+  color: #c9d1d9;
+}
+
+.dark .hljs-comment,
+.dark .hljs-quote {
+  color: #8b949e;
+  font-style: italic;
+}
+
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-doctag,
+.dark .hljs-formula {
+  color: #ff7b72;
+}
+
+.dark .hljs-string,
+.dark .hljs-meta .hljs-string,
+.dark .hljs-regexp {
+  color: #a5d6ff;
+}
+
+.dark .hljs-number,
+.dark .hljs-literal,
+.dark .hljs-variable,
+.dark .hljs-template-variable {
+  color: #79c0ff;
+}
+
+.dark .hljs-title,
+.dark .hljs-section,
+.dark .hljs-title.class_,
+.dark .hljs-title.function_ {
+  color: #d2a8ff;
+}
+
+.dark .hljs-built_in,
+.dark .hljs-attr,
+.dark .hljs-attribute,
+.dark .hljs-symbol,
+.dark .hljs-bullet,
+.dark .hljs-selector-attr,
+.dark .hljs-selector-class,
+.dark .hljs-selector-id {
+  color: #79c0ff;
+}
+
+.dark .hljs-type,
+.dark .hljs-params,
+.dark .hljs-meta,
+.dark .hljs-name {
+  color: #ffa657;
+}
+
+.dark .hljs-tag {
+  color: #8b949e;
+}
+
+.dark .hljs-tag .hljs-name {
+  color: #7ee787;
+}
+
+.dark .hljs-addition {
+  color: #aff5b4;
+  background: #033a16;
+}
+
+.dark .hljs-deletion {
+  color: #ffdcd7;
+  background: #67060c;
+}
+
+.dark .hljs-emphasis {
+  font-style: italic;
+}
+
+.dark .hljs-strong {
+  font-weight: 600;
+}
+
+.dark .caret {
+  background: #9ca3af;
+}
+
+.dark .copy-code {
+  color: #9ca3af;
+  background: rgba(17, 24, 39, 0.92);
+  border-color: #374151;
+}
+
+.dark .thin-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
 }

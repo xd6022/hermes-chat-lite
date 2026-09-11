@@ -1,6 +1,13 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import App from './App.vue'
+
+afterEach(() => {
+  // 主题/折叠都会写 localStorage 和 <html class>，跨用例必须清干净
+  localStorage.clear()
+  document.documentElement.classList.remove('dark')
+  document.documentElement.style.colorScheme = ''
+})
 
 /** 真实的一次会话：含 tool 消息与空 assistant（工具调用轮），都被过滤掉 */
 const RAW_MESSAGES = [
@@ -67,7 +74,58 @@ describe('App 集成', () => {
     const aside = w.find('aside').text()
     expect(aside).toContain('真实会话')
     expect(aside).toMatch(/今天|昨天|更早/)
-    expect(aside).toContain('+ 新对话')
+    // 新建入口仍在，但已图标化（不再是一整行 "+ 新对话" 大按钮）
+    expect(aside).not.toContain('+ 新对话')
+    expect(w.find('aside button[aria-label="新对话"]').exists()).toBe(true)
+  })
+
+  it('侧栏支持关键字搜索（Hermes 无搜索 API，前端本地过滤）', async () => {
+    const w = mount(App)
+    await flushPromises()
+
+    await w.find('aside input').setValue('真实')
+    expect(w.find('aside nav').text()).toContain('真实会话')
+
+    await w.find('aside input').setValue('zzz-不存在')
+    expect(w.find('aside nav').text()).toContain('没有匹配')
+  })
+
+  it('桌面端顶栏按钮可折叠/展开侧栏，并记住选择', async () => {
+    localStorage.removeItem('hcl.sidebar')
+    const w = mount(App)
+    await flushPromises()
+
+    const toggle = w.find('header button[aria-label="折叠会话列表"]')
+    expect(toggle.exists()).toBe(true)
+    expect(w.find('aside').classes()).not.toContain('md:hidden')
+
+    await toggle.trigger('click')
+    expect(w.find('aside').classes()).toContain('md:hidden')
+    expect(localStorage.getItem('hcl.sidebar')).toBe('1') // 刷新后仍保持折叠
+
+    const expand = w.find('header button[aria-label="展开会话列表"]')
+    expect(expand.exists()).toBe(true)
+    await expand.trigger('click')
+    expect(w.find('aside').classes()).not.toContain('md:hidden')
+    expect(localStorage.getItem('hcl.sidebar')).toBe('0')
+  })
+
+  it('顶栏可切换黑夜模式（切 <html class="dark"> 并持久化）', async () => {
+    localStorage.removeItem('hcl.theme')
+    const w = mount(App)
+    await flushPromises()
+
+    const toDark = w.find('header button[aria-label="切换到黑夜模式"]')
+    expect(toDark.exists()).toBe(true)
+    await toDark.trigger('click')
+
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(localStorage.getItem('hcl.theme')).toBe('dark')
+
+    const toLight = w.find('header button[aria-label="切换到白天模式"]')
+    expect(toLight.exists()).toBe(true)
+    await toLight.trigger('click')
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
   })
 
   it('点击会话加载历史，且 tool / 空 assistant 被过滤掉', async () => {

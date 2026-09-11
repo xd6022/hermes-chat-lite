@@ -159,7 +159,9 @@ export async function checkHealth(): Promise<void> {
 export async function loadSessions(): Promise<void> {
   store.sessionsLoading = true
   try {
-    const res = await getSessions(50)
+    // 取满服务端上限 200 条：客户端搜索只能覆盖已取到的会话，
+    // 少取一条就等于搜不到那一条（Hermes 没有服务端搜索端点）。
+    const res = await getSessions(200)
     // 隐藏/归档的不进侧栏
     store.sessions = res.data.filter((s) => !s.hidden && !s.archived)
   } catch (e) {

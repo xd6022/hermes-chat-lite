@@ -19,15 +19,16 @@
 | P4 部署 | 🟡 文件完成，**待宿主机验证** | `Dockerfile` `nginx.conf` `docker-compose.yml` `.env.example` | 本容器未挂 docker daemon，无法在此构建；命令见 §8 |
 | P5 安全加固 | ⬜ 未开始（已定用 basic_auth） | Caddy basic_auth | 未带口令返回 401 |
 | P6 每轮统计（v1.1 追加） | ✅ 完成 | `TurnStats`（`stores/chat.ts`）+ `MessageItem` 页脚 + `getSession()` | 单测 4 条 + **真实接口自检：未命中Δ + 命中Δ === usage.input_tokens** |
+| P7 界面优化（v1.1 追加） | ✅ 完成 | 侧栏搜索（`Sidebar.vue`）+ 桌面折叠（`App.vue`）+ 黑夜模式（`lib/theme.ts`） | 新增 17 条单测（54/54 全过）；产物 CSS 核验含 39 条 `:is(.dark *)` 暗色规则；`vue-tsc` 0 错 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
 ### 0.1 跨会话续接（接手先读这段，再读对应阶段章节）
 
 **路径**：`/opt/data/hermes-chat-lite`（远程 `git@github.com:xd6022/hermes-chat-lite.git`，主分支 `main`）
-**当前进度**：P0～P3 已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
+**当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
 
-**下一步**：① 宿主机 `docker compose up -d --build` + Caddy 配置 → 真机点一遍（浏览器验证是唯一没做的一环，本容器 browser-use 守护进程卡死）；② P5 Caddy basic_auth；③ v1.1 候选：消息分页加载、深色主题、`run.completed.messages` 回填工具结果到时间线。
+**下一步**：① 宿主机 `docker compose up -d --build` + Caddy 配置 → 真机点一遍（浏览器验证是唯一没做的一环，本容器 browser-use 守护进程卡死）；② P5 Caddy basic_auth；③ v1.1 剩余候选：消息分页加载、`run.completed.messages` 回填工具结果到时间线、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
 **可复制命令**：
 
@@ -429,19 +430,26 @@ export interface UiMessage {
 
 ### 5.1 `App.vue`（布局骨架）
 
-三段式：顶部栏（`Hermes` + 连接状态点 + Settings 按钮）/ 主体（Sidebar 240px + ChatWindow 自适应）/ 输入区在 ChatWindow 内部底部。
+三段式：顶部栏（侧栏开关 + `Hermes` + 连接状态点 + **主题切换** + Settings 按钮）/ 主体（Sidebar 240px + ChatWindow 自适应）/ 输入区在 ChatWindow 内部底部。
 
-- 桌面：侧栏常驻。
-- 移动端（`< 768px`）：侧栏抽屉式，左上角汉堡按钮开关，默认收起（沿用您一贯的移动端偏好）。
+- **一个按钮管两种形态**（`toggleSidebar()`，不按 viewport 分两个按钮渲染——桌面上出现"两个汉堡"很蠢）：
+  - 桌面（`≥768px`）：切换侧栏折叠/展开，选择记在 `localStorage['hcl.sidebar']`（`'1'`/`'0'`），刷新后保持。
+  - 移动端（`<768px`）：打开抽屉（选中会话后自动关闭）。
+  - 判据：`window.matchMedia('(min-width: 768px)')`，`matchMedia` 不存在时退回 `innerWidth >= 768`（测试环境要用）。
+  - 按钮 `aria-label`/`title` 随状态变化（`折叠会话列表` ↔ `展开会话列表`），否则 hover 提示会说反。
+- 折叠态实现：Sidebar 根节点加 `md:hidden`（`display:none` 优先于 `md:static`，不必动宽度动画）。
 
 ### 5.2 `Sidebar.vue`
 
-- 顶部「New Chat」按钮（主色，全宽）。
+- 顶部一行（高度压缩，不再是整行大按钮）：**搜索框（占满）+ 新建图标按钮**。
+  - **搜索是客户端过滤**：Hermes API **没有**搜索端点（实测 `/api/sessions` 只认 `limit/offset/source/include_children`；库里虽有 FTS5 索引，但只喂给 CLI 的 `hermes sessions browse`）。所以对已取到的会话做 `title / preview / id` 不区分大小写匹配。
+  - 取数取满服务端上限 200 条（`loadSessions()`），**少取一条就等于搜不到那一条**。
+  - 命中时显示 `找到 N 个`；无命中显示 `没有匹配「关键字」的会话`（不留空白）；有 `✕` 清空按钮；`Esc` 也可清空。
+- 新建会话入口降级为图标按钮（`aria-label="新对话"`），因为**发送消息时如果还没有会话会自动建一个**（`send()` 里 `if (!store.currentId) await newChat()`），所以入口不需要抢视觉权重。
 - 分组渲染：`今天` / `昨天` / `更早`（依据 `last_active`，用 `Intl.DateTimeFormat` 判定自然日差）。
 - 单条：主行 title（空则显示 `preview` 前 30 字，再空则显示 `未命名会话`），副行不显示（保持简洁）；悬浮时右侧出现小字时间。
-- 当前会话高亮（浅灰底）。
-- 空态：`还没有会话，开始新的对话吧`。
-- 加载态：骨架屏 3 行（不要 spinner 全屏遮罩）。
+- 当前会话高亮（浅灰底；深色下 `dark:bg-gray-700/70`）。
+- 空态：无会话 → `还没有会话，直接在下方输入即可开始`；加载态 → 骨架屏 5 行（不要 spinner 全屏遮罩）。
 
 分组计算放在 `lib/format.ts`，用同一个函数产出 `{label, items}[]`。
 
@@ -506,11 +514,24 @@ export interface UiMessage {
 
 ### 5.7 Settings（最小化，不做模型切换）
 
-点顶部「Settings」右侧滑出小面板，只有三项：
+点顶部「Settings」右侧滑出小面板，只有四项：
 1. 连接状态：绿点 + `Hermes v0.20.4`（数据来自 `GET /health`）+ 刷新按钮。
-2. 关于：版本号、一组快捷键说明。
+2. **外观**：当前主题（白天/黑夜）+ 切换按钮（等同顶栏那个按钮）。
+3. 关于：版本号、一组快捷键说明。
 
-（v1 不做深色主题：单主题浅色，避免代码高亮主题与配色分叉。深色留 v1.1。）
+### 5.8 侧栏搜索 / 桌面折叠 / 黑夜模式（v1.1 追加）
+
+**黑夜模式**——三处必须同时改，否则会出现"切了没反应"或"刷新闪白"：
+
+| 位置 | 作用 |
+| --- | --- |
+| `index.html` 内联脚本 | **首帧之前**读 `localStorage['hcl.theme']` 给 `<html>` 加 `dark` 类。少了它，深色用户每次刷新都会闪一下白屏（FOUC） |
+| `src/lib/theme.ts` | 运行时切换：`initTheme()` / `toggleTheme()` / `setTheme()`；同步 `<html class>`、`color-scheme`、`<meta name="theme-color">` |
+| `tailwind.config.js` `darkMode: 'class'` | 所有 `dark:` 变体的开关。配错（用默认 `media`）会**静默丢掉全部 `dark:` 类**，界面看起来"完全没变" |
+
+口径：**手动选择 > 系统偏好**。没有手动选择时跟随 `prefers-color-scheme`，且此时**不写 localStorage**（写回会把"跟随系统"冻死成当前值，系统改主题就再也追不上）。
+
+代码高亮暗色：`highlight.js` 的 `github.css` 是浅色专用，且 CSS 不支持给 `@import` 加作用域 —— 不能再引一份 `github-dark.css`（它会把整个文件的选择器都带上，浅色下也生效）。做法是在 `style.css` 里手写一份 `.dark .hljs-*` 调色板（约 30 行），靠选择器优先级覆盖 `github.css`。
 
 **明确不做**：模型切换、Prompt 管理、Agent 配置（需求第七条禁止项）。
 
@@ -522,7 +543,7 @@ export interface UiMessage {
 | --- | --- |
 | 消息区最大宽度 | `768px`，水平居中 |
 | 字体 | 正文 15px / 行高 1.75（中文可读性）；代码 13px mono |
-| 主色 | 深灰近黑（`#111827`）配白底；暗色模式 `#0f1115` 底 |
+| 主色 | 浅色：近黑文字 `#111827` 配白底 `#ffffff`；深色：`gray-100` 文字配 `gray-950` 底（`#030712`），卡片 `gray-900`。以 Tailwind `dark:` 变体落地，不写死 hex |
 | 圆角 | 卡片 12px，输入框 16px |
 | 间距 | 消息之间 24px，段落之间 12px |
 | 侧栏 | 240px / 底 `#f9fafb`，与主体 1px 分隔线 |
@@ -649,7 +670,8 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | Origin 403 修复 | 带 `Origin` 头打修复后的反代 | ✅ GET 200 / POST 201；对照：直连 8642 带同样 `Origin` 仍 403（反证触发点就是它） |
 | token 口径 | 真接口连发两轮，比对 usage 与两次会话记录 | ✅ 未命中Δ 706 + 命中Δ 26624 === usage.input_tokens 27330（精确）；`run.completed` 后立即读记录已是新值 → 无竞态 |
 | 每轮统计页脚 | 用真实数据按前端同样算法渲染 | ✅ 输出 `⏱ 3.6s · 输入 27.3k · 缓存 26.6k (97%) · 输出 20` |
-| 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 271KB（gzip 106KB） |
+| 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 280KB（gzip 109KB）/ CSS 25.4KB |
+| 界面优化三件套（v1.1） | `vitest` + 产物 CSS 核验 | ✅ 新增 17 条（54/54 全过）：搜索过滤/无命中空态/清空、折叠持久化、主题切换与持久化、隐私模式不抛异常；`dist/assets/*.css` 含 39 条 `:is(.dark *)` 与 `.dark .hljs-*` 规则；`dist/index.html` 含首帧防闪白脚本 |
 | 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
 | Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |
 
@@ -657,7 +679,9 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 
 ## 11. 明确不做（v1 冻结，防范围蔓延）
 
-用户登录 / 权限 / 多用户 / 数据库 / 文件上传 / 图片生成 / 插件市场 / 模型切换 / Prompt 管理 / Agent 配置页 / 会话删除与收藏 / 会话搜索 / 消息重新生成 / 多标签并发流。
+用户登录 / 权限 / 多用户 / 数据库 / 文件上传 / 图片生成 / 插件市场 / 模型切换 / Prompt 管理 / Agent 配置页 / 会话删除与收藏 / 消息重新生成 / 多标签并发流。
+
+**关于"会话搜索"**（原列在此处，v1.1 已做）：做的是**客户端标题过滤**（覆盖已加载的 200 条），不是服务端全文检索——Hermes API 没有搜索端点，要做真搜索必须改 Hermes 源码，与"不改 Hermes"原则冲突。消息内容搜索仍不做。
 
 （Hermes API 其实支持其中若干项——fork、会话删除、model lock——但为守住"简洁 > 复杂"，v1 一律不做。）
 
@@ -687,3 +711,7 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 20. **健康检查不能打 `/health`** → 实测 `/health` 不带 key 也返回 200，密钥填错照样 healthy，等于验不出问题；要打 `GET /api/sessions?limit=1`（无 key/错 key 返回 401），才能同时验证反代与密钥有效。
 21. **★★ 带 `Origin` 头的请求会被 Hermes 直接 403**（本项目部署时真实踩到，代码与文档此前判断有误）→ Hermes 的 CORS 中间件在 `cors: false` 时，只要请求带 `Origin` 就返回 **403 空 body**（`Server: Python/3.x aiohttp`）。**浏览器所有 POST 都自带 `Origin`，curl 不发送** → 结果就是：命令行怎么测都通，真机浏览器一打开就死。修法：反代层剥掉它 —— nginx `proxy_set_header Origin "";`，vite dev proxy `proxyReq.removeHeader('origin')`。**注意：这不是"开 CORS 就行"的问题，同源反代本身也不够。**
 22. **★★ 清理测试会话只许按 id 白名单，禁止按 `source` 批量删**（2026-09-11 真实事故，见 `docs/incident-2026-09-11-deleted-session.md`）→ `DELETE /api/sessions/{id}` 是**硬删除**（会话 + 消息一起没，无回收站）；MySQL 归档 cron 每天 21:00 才跑一次，之前删的东西没有第二份副本。用 `source=api_server` 做批量条件删除会**把用户的真实会话一起删掉，且不可恢复**（页级抢救实测无效：被删页已被后续写入复用）。
+23. **★ 会话搜索必须客户端自己实现** → Hermes API **没有**搜索端点：`GET /api/sessions` 实测只认 `limit/offset/source/include_children`；`hermes_state.py` 里那个 `search_sessions()` 名字骗人，它只是"按 source/workspace 列会话"，不搜关键字；真正的 FTS5 全文检索在 `hermes_state_search.py`，但只喂 CLI（`hermes sessions browse --filter`），没走 HTTP。所以搜索只能对已取到的会话做本地匹配，且**必须取满 limit=200**（少取就搜不到）。搜消息内容要改 Hermes 源码，不做。
+24. **★★ 测试里 `localStorage` 是 undefined（Node 22+ 遮蔽 jsdom）** → 裸 jsdom 明明有（`typeof window.localStorage === 'object'`），但在 vitest 里 `globalThis.localStorage` 已被 **Node 22+ 内置的实验性实现**占住：没有 `--localstorage-file` 时取值为 `undefined` 并打印 `ExperimentalWarning: localStorage is not available...`，把 jsdom 那份遮蔽掉。症状是 `Cannot read properties of undefined (reading 'clear')`，会误以为是 jsdom 不支持。修法：`src/test-setup.ts` 装一个语义完整的内存 `Storage`（不要用 mock 调用次数糊过去，那样测的不是真逻辑），并给 jsdom 一个真实 `url`（`environmentOptions`，否则不透明 origin 下 jsdom 根本不建 localStorage）。
+25. **★ 暗色模式三处必须同步改** → `index.html` 内联脚本（首帧前定主题，防闪白）+ `lib/theme.ts`（运行时切换）+ `tailwind.config.js` 的 `darkMode: 'class'`。漏掉第三处时**不会报错**，只是所有 `dark:` 类被静默丢弃、界面看起来完全没切。核验方式：构建后在 `dist/assets/*.css` 里数 `:is(.dark *)` 出现次数（当前 39 条）。注意 Tailwind 3.4 生成的是 `:is(.dark *)` 形式，**不是** `.dark .bg-gray-800`，用后一种模式 grep 会得到 0 并误判成"配置没生效"。
+26. **★ hljs 暗色不能直接再引一份 `github-dark.css`** → CSS 不支持给 `@import` 加作用域，引进来会在浅色模式下也生效。做法是手写 `.dark .hljs-*` 调色板（`.dark .hljs` 的优先级高于 `.hljs`，能覆盖 `github.css` 的 `background:#fff`），代码块底色由 `.md-body pre` 的 `dark:bg-gray-900` 负责，`.dark .hljs` 只把背景设为透明。

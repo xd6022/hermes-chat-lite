@@ -4,6 +4,11 @@
  * 鉴权：生产环境由 nginx 在反代层注入 Authorization 头，前端不持有 key。
  *      开发环境由 vite.config.ts 的 dev proxy 注入。
  *      所以这里**不设置** Authorization，也不配置 baseURL（同源）。
+ *
+ * 会话搜索：Hermes API **没有**搜索端点（实测 /api/sessions 只认
+ * limit/offset/source/include_children），所以搜索在客户端做 —— 见
+ * stores/chat.ts 的 loadSessions（一次取到服务端上限 200 条）与
+ * Sidebar.vue 的关键字过滤。
  */
 
 import { postSse, type SseHandler } from './sse'
@@ -65,8 +70,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return (await res.json()) as T
 }
 
-/** 会话列表。默认取最近 50 条（服务端上限 200）。 */
-export function getSessions(limit = 50): Promise<SessionListResponse> {
+/**
+ * 会话列表。默认取服务端上限 200 条 —— 客户端搜索只能覆盖"已取到的"会话，
+ * 所以取满上限，搜索命中面才够大（Hermes 服务端 limit 上限就是 200）。
+ */
+export function getSessions(limit = 200): Promise<SessionListResponse> {
   return request<SessionListResponse>(`/api/sessions?limit=${limit}&offset=0`)
 }
 

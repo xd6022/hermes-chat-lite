@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config'
+import type { ProxyOptions } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 /**
@@ -24,13 +25,21 @@ export default defineConfig(({ command }) => {
     )
   }
 
-  const upstream = {
+  const upstream: ProxyOptions = {
     target: API_TARGET,
     changeOrigin: true,
     headers: {
       ...(API_KEY ? { Authorization: `Bearer ${API_KEY}` } : {}),
       // 关键：SSE 要逐块转发，不能让链路做压缩/缓冲
       'Accept-Encoding': 'identity',
+    },
+    // 关键：必须剥掉 Origin。Hermes API Server 的 CORS 中间件对任何带 Origin 的请求
+    // 直接返回 403（防 CSRF），而浏览器所有 POST 都会带 Origin —— 不剥掉的话
+    // dev 环境下真机浏览器同样会挂（curl 测试看不出来）。
+    configure: (proxy) => {
+      proxy.on('proxyReq', (proxyReq) => {
+        proxyReq.removeHeader('origin')
+      })
     },
   }
 

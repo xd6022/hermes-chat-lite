@@ -87,6 +87,16 @@ chat.<域名> {
 2. 点会话 → 历史消息渲染正常（无 tool/JSON 噪音），代码块高亮
 3. 发一条消息 → 文字**逐字**出现；长任务时状态条显示 `🔧 正在使用 xxx…`，结束后常驻 `✓ 完成 · Ns · M 个工具调用`（若这里变成"等全部返回才显示"，就是 nginx 少了 `proxy_buffering off`）
 
+**排错对照表**（都是实测踩过的）：
+
+| 现象 | 病因 |
+| --- | --- |
+| 接口 **403**、body 空，但 key 是对的 | Hermes 的 CORS 中间件拒绝了**带 `Origin` 头**的请求。nginx 的 API location 必须有 `proxy_set_header Origin "";`。浏览器必带 `Origin`、curl 不带 → 命令行测不出来，只在真机炸 |
+| 接口 **401** | 反代没注入 `Authorization`，或 key 值不对（自检：`awk -F= '{print length($2)}' .env` 应为 64） |
+| 流式变一次性返回 | 缺 `proxy_buffering off` |
+| 容器 **unhealthy** | key/反代有问题（healthcheck 打的是需要鉴权的 `/api/sessions`，不是 `/health`） |
+| 点发送毫无反应 | 早期版本的锅（错误静默）；现在会显示红色横幅 + 重试 |
+
 ## 目录
 
 ```

@@ -41,7 +41,11 @@ async function readErrorMessage(res: Response): Promise<{ message: string; code?
 }
 
 function friendly(status: number, message: string): string {
-  if (status === 401 || status === 403) return '接口密钥无效或未注入（请检查反代配置）'
+  if (status === 401) return '接口密钥无效或未注入（检查反代是否注入 Authorization 头）'
+  if (status === 403) {
+    // 实测：Hermes 的 CORS 中间件对任何带 Origin 的请求返回 403 空响应
+    return '请求被 Hermes 的 CORS 防护拒绝（403）：浏览器必带 Origin 头，反代必须清掉它（nginx: proxy_set_header Origin ""）'
+  }
   if (status === 404) return '会话不存在（可能已被删除）'
   if (status === 409) return '会话已存在，请新建会话'
   if (status === 503) return 'Hermes 会话数据库不可用'

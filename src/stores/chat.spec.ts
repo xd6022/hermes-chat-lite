@@ -273,7 +273,7 @@ describe('失败必须可见（不能静默）', () => {
     const mod = await freshModule()
     await mod.send('你是谁')
 
-    expect(mod.store.bootError).toBe('接口密钥无效或未注入（请检查反代配置）')
+    expect(mod.store.bootError).toBe('接口密钥无效或未注入（检查反代是否注入 Authorization 头）')
     expect(mod.store.messages).toHaveLength(0)
     expect(mod.store.streaming).toBe(false)
   })
@@ -291,7 +291,18 @@ describe('失败必须可见（不能静默）', () => {
     )
     const mod = await freshModule()
     await mod.loadSessions()
-    expect(mod.store.bootError).toBe('接口密钥无效或未注入（请检查反代配置）')
+    expect(mod.store.bootError).toBe('接口密钥无效或未注入（检查反代是否注入 Authorization 头）')
     expect(mod.store.sessionsLoading).toBe(false)
+  })
+
+  it('403（带 Origin 被 Hermes CORS 防护拒绝）要给出区别于 401 的定位提示', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 403 })),
+    )
+    const mod = await freshModule()
+    await mod.loadSessions()
+    expect(mod.store.bootError).toContain('CORS')
+    expect(mod.store.bootError).toContain('Origin')
   })
 })

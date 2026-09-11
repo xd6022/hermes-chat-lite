@@ -130,6 +130,8 @@ Open WebUI 这类 OpenAI 兼容客户端只解析标准 `data: {"choices":[{"del
 
 **结论：本项目选原生端点，不选 OpenAI 兼容端点。** 这是本设计相对 Open WebUI 的核心改进点。
 
+**★ 反代必须清掉 `Origin` 头（实测踩坑，见 §12 第 21 条）**：Hermes 的 CORS 中间件在 `cors: false` 时会对任何携带 `Origin` 的请求返回 403 空响应。浏览器发 POST 一定带 `Origin`，所以反代（nginx / vite dev proxy）必须把它剥掉，否则真机浏览器 100% 不可用。
+
 ### 2.1 类型定义（`src/api/types.ts`）
 
 ```ts
@@ -339,6 +341,7 @@ export async function postSse(
 ### 3.3 `nginx.conf` 的关键点
 
 - `/api/` 与 `/v1/` 反代到 `http://hermes:8642`，并 `proxy_set_header Authorization "Bearer <key>"`；
+- **`proxy_set_header Origin "";`（必须，最容易漏，实测踩过）** —— Hermes API Server 的 CORS 中间件对**任何带 `Origin` 头的请求直接返回 403 空响应**（防 CSRF 设计）。浏览器所有 POST 都带 `Origin`，curl 不带 → 命令行测试全绿、真机浏览器全挂。nginx 语义：请求头设为空字符串 = 不向后端传递。
 - **`proxy_buffering off;`（必须）** —— 否则 nginx 会缓冲整个 SSE 响应，流式变一次性；
 - `proxy_read_timeout 3600s;`（agent 单轮可能跑很久）；
 - `proxy_http_version 1.1;` + `Connection ""`；
@@ -620,6 +623,7 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | SSE 解析器打真实接口 | node 直接跑 `src/api/sse.ts`（模拟反代注入鉴权头）打 `POST /api/sessions/{id}/chat/stream` | ✅ 事件序列 `run.started → message.started → tool.started → tool.completed → assistant.delta → tool.progress → assistant.completed → run.completed → done`；delta 分片 2（真流式）；`read_file` 工具事件收到；`run.completed` 收到 |
 | 历史消息过滤 | 同上，读回 `GET /messages` | ✅ 原始 4 条 → 界面可见 2 条，最后一条是 assistant |
 | 前端运行时 | `vitest`（jsdom + @vue/test-utils） | ✅ 31/31 通过（半帧切片、中文切在多字节中间、keepalive、过滤规则、输入法、App 集成） |
+| Origin 403 修复 | 带 `Origin` 头打修复后的反代 | ✅ GET 200 / POST 201；对照：直连 8642 带同样 `Origin` 仍 403（反证触发点就是它） |
 | 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 271KB（gzip 106KB） |
 | 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
 | Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |
@@ -654,5 +658,6 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 16. **`tool.started` 的 `args` 是脱敏后的展示值** → 可以直接显示，但别当作真实参数入库/回传。
 17. **`assistant.completed.content` 必须覆盖 delta 拼接** → 实测：delta 原文是 `["\n\nhermes-chat","-lite"]`，`completed` 是 `"hermes-chat-lite"`。**delta 会带前导换行等杂质**，追加会多出空行、少字就在所难免。以 `completed` 覆盖是必须的，不是防御性编程。
 18. **计时器别用事件里的 `ts`** → 用 `performance.now()` 本地算，否则时间会跳。
-20. **健康检查不能打 `/health`** → 实测 `/health` 不带 key 也返回 200，密钥填错照样 healthy，等于验不出问题；要打 `GET /api/sessions?limit=1`（无 key/错 key 返回 401），才能同时验证反代与密钥有效。
 19. **完成态必须由事件显式判定** → 见 5.6 的判定表；"界面不再变化"≠"已完成"，这正是 Open WebUI 让您困惑的地方。
+20. **健康检查不能打 `/health`** → 实测 `/health` 不带 key 也返回 200，密钥填错照样 healthy，等于验不出问题；要打 `GET /api/sessions?limit=1`（无 key/错 key 返回 401），才能同时验证反代与密钥有效。
+21. **★★ 带 `Origin` 头的请求会被 Hermes 直接 403**（本项目部署时真实踩到，代码与文档此前判断有误）→ Hermes 的 CORS 中间件在 `cors: false` 时，只要请求带 `Origin` 就返回 **403 空 body**（`Server: Python/3.x aiohttp`）。**浏览器所有 POST 都自带 `Origin`，curl 不发送** → 结果就是：命令行怎么测都通，真机浏览器一打开就死。修法：反代层剥掉它 —— nginx `proxy_set_header Origin "";`，vite dev proxy `proxyReq.removeHeader('origin')`。**注意：这不是"开 CORS 就行"的问题，同源反代本身也不够。**

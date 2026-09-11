@@ -73,16 +73,33 @@ runtime.tool_execution: "server"  ← 工具在 Hermes 容器内真实执行
 
 > 决策点：[待确认] 是否接受 Caddy basic_auth？如果选 2，本项目的部署章节可简化。
 
-### 3.2 CORS 默认关闭 → 必须同源反代
+### 3.2 CORS 关闭的真实行为：不是"跨域被拦"，而是"带 Origin 直接 403"
 
-实测 `capabilities.features.cors: false`。可以开 `API_SERVER_CORS_ORIGINS`（需要重启 gateway），但**不推荐**：开了 CORS 只是让浏览器跨域请求成功，key 还是要暴露到前端。反代方案同时解决 3.1 和 3.2，是唯一正确解法。
-
-架构：
+实测 `capabilities.features.cors: false`，并且**实测发现它的行为比预期更硬**：
 
 ```
-浏览器 → chat.<域名> → Caddy (+basic_auth) → chatlite:80 (nginx 静态站 + /api /v1 反代，注入 Authorization)
-                                                   ↓ [net_openclaw]
-                                              hermes:8642
+直连 POST /api/sessions 不带 Origin           → 201
+直连 POST /api/sessions 带 Origin: https://…  → 403（空 body，Server: Python/3.x aiohttp）
+```
+
+Hermes 的 CORS 中间件在 CORS 未配置时，对**任何携带 `Origin` 头的请求**直接返回 403（防 CSRF）。**浏览器所有 POST 请求都自带 `Origin`，而 curl/脚本不发这个头** —— 所以这个坑在命令行测试里 100% 看不见，只在真机浏览器上炸（本项目部署时真实踩到，排查代价不小）。
+
+修法（二者都在反代层，不需要改 Hermes 配置、不需要重启 gateway）：
+
+| 环境 | 做法 |
+| --- | --- |
+| 生产 nginx | `proxy_set_header Origin "";`（请求头设为空字符串 = 不向后端传递） |
+| 开发 vite | dev proxy 的 `configure` 里 `proxyReq.removeHeader('origin')` |
+
+开启了 `API_SERVER_CORS_ORIGINS` 也能绕过，但要重启 gateway，且把浏览器跨域能力打开，不如在反代层剥掉干净。
+
+架构（含 Origin 处理）：
+
+```
+浏览器 → chat.<域名> → Caddy (+basic_auth) → chatlite:80
+         nginx 静态站 + /api /v1 反代（注入 Authorization，剥掉 Origin）
+                                              ↓ [net_openclaw]
+                                         hermes:8642
 ```
 
 ### 3.3 历史消息不是纯文本，必须过滤

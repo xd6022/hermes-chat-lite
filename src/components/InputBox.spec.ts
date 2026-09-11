@@ -18,6 +18,26 @@ beforeEach(() => {
   store.streaming = false
 })
 
+describe('InputBox 布局（文字区与按钮上下两段）', () => {
+  it('文字区占满整宽，按钮在独立的工具行里（不能并排）', () => {
+    const w = mount(InputBox)
+    const ta = w.find('textarea')
+    const btn = w.find('button')
+
+    // 并排时按钮会挤掉文字区右侧（症状：输入长内容时按钮上方一片空）
+    expect(ta.element.parentElement).not.toBe(btn.element.parentElement)
+    expect(ta.classes()).toContain('w-full')
+
+    // 按钮那一行是文字区的兄弟节点，同属外层圆角容器
+    expect(btn.element.parentElement?.parentElement).toBe(ta.element.parentElement)
+  })
+
+  it('只有一个按钮（发送/停止），工具行是预留位', () => {
+    const w = mount(InputBox)
+    expect(w.findAll('button').length).toBe(1)
+  })
+})
+
 describe('InputBox 输入规则', () => {
   it('Enter 发送', async () => {
     const w = mount(InputBox)

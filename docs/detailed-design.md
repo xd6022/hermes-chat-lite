@@ -21,6 +21,7 @@
 | P6 每轮统计（v1.1 追加） | ✅ 完成 | `TurnStats`（`stores/chat.ts`）+ `MessageItem` 页脚 + `getSession()` | 单测 4 条 + **真实接口自检：未命中Δ + 命中Δ === usage.input_tokens** |
 | P7 界面优化（v1.1 追加） | ✅ 完成 | 侧栏搜索（`Sidebar.vue`）+ 桌面折叠（`App.vue`）+ 黑夜模式（`lib/theme.ts`） | 新增 17 条单测（54/54 全过）；产物 CSS 核验含 39 条 `:is(.dark *)` 暗色规则；`vue-tsc` 0 错 |
 | P8 长会话完整可读（v1.2 追加） | ✅ 完成 | 历史分页 `loadEarlier()`（划到顶自动触发 + 按钮兜底）+ 连续 assistant 合并（`normalize`）+ 压缩摘要折叠（`lib/messages.ts`、`MessageItem`） | 新增 18 条单测（72/72 全过），含"滚动到顶自动加载/到底不再请求/加载中不重复"；**真实链路核验：逐页加载结果与全量读 `toEqual` 完全相等**（206 条会话，含偏移位移去重） |
+| P9 输入区布局（v1.4 追加） | ✅ 完成 | `InputBox.vue` 改上下两段（文字区占满整宽 + 底部工具行） | 新增 2 条结构用例（74/74 全过），锁死"不得并排"，见 §5.5 / 坑 30 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -476,10 +477,24 @@ export interface UiMessage {
 
 ### 5.5 `InputBox.vue`
 
-- `textarea` 高度自适应（1～8 行，`scrollHeight` 计算）。
-- Enter 发送、Shift+Enter 换行；**中文输入法合成期间（`isComposing`）不触发发送**（必须处理，否则拼音回车会误发）。
+**布局（v1.4 改，对齐 ChatGPT）：文字区与按钮上下两段，不并排。**
+
+```
+┌───────────────────────────────┐
+│ 文字区（占满整宽，可顶到最右）  │
+│                       [发送]  │ ← 工具行
+└───────────────────────────────┘
+```
+
+早期版本是 `textarea(flex-1)` + 按钮左右并排（`flex items-end`），副作用是按钮占住右下角、文字到按钮左缘就断行 —— 输入长内容时按钮上方一片空白，观感像"这个角落必须留空"。改成两段后文字区 `w-full` 一路顶到容器右侧。
+
+- 工具行（`flex items-center justify-end gap-1 pt-1`）是按钮集合位；以后加语音/附件按钮就放这里，左侧用 `justify-between` 分区。
+- `autoGrow()` 的最大高度要**减掉工具行高度**（`TOOLBAR_PX = 40`），否则算出来的高度会把按钮顶出容器。
+- 其余规则不变：Enter 发送 / Shift+Enter 换行 / 中文输入法 `isComposing` 期间绝不发送 / 生成中只把发送换成"停止"而不禁用输入。
+
+- `textarea` 高度自适应（`scrollHeight` 计算，上限 40vh 再减掉工具行高），超出后内部滚动。
 - 生成中：发送按钮变「停止」，点击 `stop()`；**输入框保持可输入**（只禁用发送，方便先打下一句），Enter 不再触发发送。
-- 右下角小字：`Hermes 可能会出错，请核对重要信息`（可选，一句话即可）。
+- 输入框下方小字：`浏览器刷新会打断正在进行的回复 · Enter 发送 / Shift+Enter 换行`。
 
 ### 5.6 `RunStatus.vue` —— 执行可观测性（针对 Open WebUI 的核心痛点）
 
@@ -758,3 +773,4 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 27. **★ 历史分页的 offset 锚定在"最新"，不是会话开头** → `order` 只有 `oldest|latest`（传 `earliest` 直接 400：`order must be one of: oldest, latest`）；`latest` + `offset=N` 是"从最新往回数第 N 条"，所以**发过新消息后已加载窗口会整体后移并与新页重叠 → 必须按 id 去重**；接口不返回总数，"还有没有更早"只能靠 `returned === limit` 判断（messages 的 limit 上限实测 500）。改动分页相关代码时，务必用 §5.9 ⑤ 那个"逐页加载 vs 一次全量读 `toEqual`"的核验方法重跑一遍。
 28. **★★ 合并连续 assistant 之后，不能再用界面消息去重** → 合并只保留该组最后一条的 id，中间 id 从界面上消失；拿 `store.messages` 的 `srcId` 去重会漏（自测已复现：同一段被加载两次）。要单独维护 `loadedIds`。同理，**压缩摘要消息不能靠 `startsWith('[CONTEXT COMPACTION')` 识别** —— 真实那条以 `[PRIOR CONTEXT — for reference only…]` 开头，标记在 100 字符之后，必须用 Hermes 压缩器那套"前 280 字符包含标记"的判据（见 `lib/messages.ts`）。
 29. **★ "加载更早"按钮不能因为有了自动加载就删掉** → 自动加载挂在 `scroll` 事件上，而**内容不足一屏时容器根本不产生滚动事件**，用户永远触发不了 → 必须有可点的按钮兜底（它同时是"加载中…"的反馈位）。另外自动加载的阈值是 `scrollTop <= 60px` 而不是 `== 0`，贴到 0 才加载会先露一段空档。
+30. **★ 发送按钮不要与 `textarea` 并排** → 并排（`flex` + `textarea` 用 `flex-1`）会让按钮占住右下角，文字到按钮左缘就断行：输入长内容时按钮上方一片空白。正确做法是上下两段——文字区 `w-full` 占满整宽，按钮放它下面单独的工具行（ChatGPT 也是这样，工具行里还能放语音等按钮）。`autoGrow()` 的高度上限要相应减掉工具行高度。

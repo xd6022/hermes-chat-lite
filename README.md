@@ -44,7 +44,7 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:5173/api/sessions?lim
 ## 测试 / 类型检查 / 构建
 
 ```bash
-node node_modules/vitest/vitest.mjs run          # 72 个用例：SSE 半帧切片、中文多字节切分、过滤规则、输入法、集成、搜索/折叠/主题、历史分页与消息合并
+node node_modules/vitest/vitest.mjs run          # 74 个用例：SSE 半帧切片、中文多字节切分、过滤规则、输入法、输入框布局、集成、搜索/折叠/主题、历史分页与消息合并
 npm run typecheck                                # vue-tsc --noEmit
 npm run build                                    # 产物约 282KB（gzip 110KB）+ CSS 26KB
 ```

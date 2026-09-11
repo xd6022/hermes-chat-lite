@@ -2,9 +2,12 @@
 /**
  * 聊天区：消息列表 + 执行状态条 + 输入框。
  * 自动滚动策略：只有用户本来就在底部附近时才跟随，避免翻历史时被强行拽回。
+ *
+ * 历史分页：首屏只取最近 100 条（Hermes 的 messages 接口一次最多 500），
+ * 更早的由"加载更早的消息"按钮按 offset 翻页（offset 从最新往回数，见 §5.9）。
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { loadSessions, openSession, store } from '../stores/chat'
+import { loadEarlier, loadSessions, openSession, store } from '../stores/chat'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
 import InputBox from './InputBox.vue'
@@ -25,8 +28,6 @@ const tail = computed(() => {
   return n * 10_000 + (store.messages[n - 1].content?.length ?? 0)
 })
 
-const truncated = computed(() => store.messages.length >= 100)
-
 function onScroll(): void {
   const el = scroller.value
   if (!el) return
@@ -37,6 +38,22 @@ async function toBottom(): Promise<void> {
   await nextTick()
   const el = scroller.value
   if (el) el.scrollTop = el.scrollHeight
+}
+
+/**
+ * 加载更早的消息：加载后把视口"钉"在原处。
+ * 必须自己算，因为 prepend 会让 scrollHeight 一下变大 —— 不补偿就会出现
+ * "点一下、内容跳到最上面/最下面"的错觉。同时临时关掉跟随底部（否则
+ * tail 变化会触发 toBottom，把用户刚要看的历史顶走）。
+ */
+async function earlier(): Promise<void> {
+  const el = scroller.value
+  const prevHeight = el?.scrollHeight ?? 0
+  const prevTop = el?.scrollTop ?? 0
+  stick.value = false
+  await loadEarlier()
+  await nextTick()
+  if (el) el.scrollTop = prevTop + (el.scrollHeight - prevHeight)
 }
 
 watch(tail, () => {
@@ -118,14 +135,21 @@ function retry(): void {
       </div>
 
       <!-- 消息 -->
-      <div v-else class="mx-auto max-w-chat space-y-6 px-4 py-6">
-        <p
-          v-if="truncated"
-          class="rounded-lg bg-gray-50 px-3 py-2 text-center text-xs text-gray-400 dark:bg-gray-900 dark:text-gray-500"
-        >
-          仅显示最近 100 条消息
-        </p>
-        <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
+      <div v-else class="mx-auto max-w-chat px-4 py-6">
+        <!-- 更早的历史：不满一页就说明到底了，按钮自动消失 -->
+        <div v-if="store.hasMoreHistory" class="mb-4 flex justify-center">
+          <button
+            type="button"
+            class="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 disabled:opacity-60 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-gray-200"
+            :disabled="store.historyLoading"
+            @click="earlier()"
+          >
+            {{ store.historyLoading ? '加载中…' : '加载更早的消息' }}
+          </button>
+        </div>
+        <div class="space-y-6">
+          <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
+        </div>
       </div>
     </div>
 

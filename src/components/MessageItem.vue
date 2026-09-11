@@ -3,6 +3,7 @@
  * 单条消息。
  *  - 用户消息：纯文本（pre-wrap），不解析 markdown（避免误解出代码高亮）
  *  - 助手消息：markdown 渲染 + 代码高亮 + 代码块复制按钮 + 流式光标
+ *  - 压缩摘要消息（msg.compaction）：折叠块（内部机制，不该占据正文位置）
  *
  * 流式性能：内容变化用 requestAnimationFrame 节流后整段重渲染（不做增量 diff）。
  * 代码块复制按钮：渲染后注入 DOM（v-html 出来的节点拿不到 Vue 作用域，所以用原生事件）。
@@ -81,6 +82,24 @@ onBeforeUnmount(() => {
     <div
       class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-gray-100 px-4 py-2 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
     >{{ msg.content }}</div>
+  </div>
+
+  <!-- 压缩摘要：Hermes 的上下文压缩边界，属于内部机制 —— 折叠起来，别占正文位置 -->
+  <div
+    v-else-if="msg.compaction"
+    class="rounded-xl border border-gray-200 bg-gray-50/60 dark:border-gray-800 dark:bg-gray-900/40"
+  >
+    <details>
+      <summary
+        class="cursor-pointer select-none px-3 py-2 text-xs text-gray-400 dark:text-gray-500"
+      >
+        内部上下文摘要（Hermes 压缩边界，点开查看）
+      </summary>
+      <div
+        class="thin-scroll md-body max-h-80 overflow-y-auto px-3 pb-3 text-[13px] text-gray-500 dark:text-gray-400"
+        v-html="html"
+      />
+    </details>
   </div>
 
   <!-- 助手消息：文本流，不用气泡 -->

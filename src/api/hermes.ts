@@ -83,9 +83,12 @@ export function createSession(): Promise<CreateSessionResponse> {
   return request<CreateSessionResponse>('/api/sessions', { method: 'POST', body: '{}' })
 }
 
-/** 历史消息。order=latest 返回最近 N 条（内部仍按时间正序）。 */
-export function getMessages(sessionId: string, limit = 100): Promise<MessageListResponse> {
-  const q = new URLSearchParams({ order: 'latest', limit: String(limit), offset: '0' })
+/**
+ * 历史消息。order 只有 oldest|latest 两个合法值；latest + offset 是"从最新往回数"。
+ * 默认取最近 100 条，更早的用 loadEarlier() 按 offset 翻页。
+ */
+export function getMessages(sessionId: string, limit = 100, offset = 0): Promise<MessageListResponse> {
+  const q = new URLSearchParams({ order: 'latest', limit: String(limit), offset: String(offset) })
   return request<MessageListResponse>(
     `/api/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`,
   )

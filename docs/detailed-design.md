@@ -20,15 +20,16 @@
 | P5 安全加固 | ⬜ 未开始（已定用 basic_auth） | Caddy basic_auth | 未带口令返回 401 |
 | P6 每轮统计（v1.1 追加） | ✅ 完成 | `TurnStats`（`stores/chat.ts`）+ `MessageItem` 页脚 + `getSession()` | 单测 4 条 + **真实接口自检：未命中Δ + 命中Δ === usage.input_tokens** |
 | P7 界面优化（v1.1 追加） | ✅ 完成 | 侧栏搜索（`Sidebar.vue`）+ 桌面折叠（`App.vue`）+ 黑夜模式（`lib/theme.ts`） | 新增 17 条单测（54/54 全过）；产物 CSS 核验含 39 条 `:is(.dark *)` 暗色规则；`vue-tsc` 0 错 |
+| P8 长会话完整可读（v1.2 追加） | ✅ 完成 | 历史分页 `loadEarlier()` + 连续 assistant 合并（`normalize`）+ 压缩摘要折叠（`lib/messages.ts`、`MessageItem`） | 新增 15 条单测（69/69 全过）；**真实链路核验：逐页加载结果与全量读 `toEqual` 完全相等**（206 条会话，含偏移位移去重） |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
 ### 0.1 跨会话续接（接手先读这段，再读对应阶段章节）
 
 **路径**：`/opt/data/hermes-chat-lite`（远程 `git@github.com:xd6022/hermes-chat-lite.git`，主分支 `main`）
-**当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
+**当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）、P8（长会话分页与合并）已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
 
-**下一步**：① 宿主机 `docker compose up -d --build` + Caddy 配置 → 真机点一遍（浏览器验证是唯一没做的一环，本容器 browser-use 守护进程卡死）；② P5 Caddy basic_auth；③ v1.1 剩余候选：消息分页加载、`run.completed.messages` 回填工具结果到时间线、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
+**下一步**：① 宿主机 `docker compose up --build` 重建 → 真机点一遍（浏览器验证是唯一没做的一环，本容器 browser-use 守护进程卡死），重点按 README「上线自检」5 条走；② P5 Caddy basic_auth；③ 后续候选：`run.completed.messages` 回填工具结果到时间线（现在工具时间线只在流式过程中可见，重开就没了）、真机上把滚动位置补偿手感调一遍、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
 **可复制命令**：
 
@@ -535,6 +536,37 @@ export interface UiMessage {
 
 **明确不做**：模型切换、Prompt 管理、Agent 配置（需求第七条禁止项）。
 
+### 5.9 历史分页与消息合并（v1.2 追加）
+
+**起因**（用户反馈）：「打开这个会话，最上面的消息只能到中间某一条」+「页面展示像自动加了换行」。两个都是真问题，各有明确根因。
+
+**① 分页语义（实测 2026-09-11，本机 hermes:8642）**
+
+| 项 | 实测结论 |
+| --- | --- |
+| 合法 `order` | 只有 `oldest` / `latest`；传 `earliest` 直接 **400** —— `order must be one of: oldest, latest` |
+| `order=latest` + `offset=N` | 从**最新往回数**第 N 条起的一页；页内按时间正序；不同 offset 的窗口**不重叠** |
+| `limit` 上限 | messages 接口实测 **500**（传 1000 会被夹到 500） |
+| 总数 | 接口**不返回 total**，只能靠「返回条数 == limit」判断可能还有更早的 |
+
+选 `latest`+`offset` 而不是 `oldest`：首屏要的就是"最新一页"，用 `oldest` 得先知道总数（接口不给）。代价是 offset **锚定在"最新"** —— 发过新消息后窗口整体后移、与已加载内容重叠，**必须按 id 去重**。
+
+**② 去重不能用 `store.messages` 里的 srcId**（自测踩到）：连续 assistant 合并后，一个界面消息只保留该组**最后一条**的 id，中间 id 从界面上消失 → 去重漏掉它们，同一段内容会被加载两次。必须单独维护模块级 `loadedIds`（`openSession` 时重置）。
+
+**③ 合并连续 assistant**（`normalize` 最后一步、`prependEarlier` 在分页边界补一次）：一次工具轮次里模型可能说好几段话，transcript 就是连续多条 assistant（实测本会话有一条 **19 条连续**）。分开渲染 = 段间 24px 间距 + 复制出来多空行，读起来就是"自动加了换行"；合并成一段后与流式时的观感一致（流式本来只有一块）。
+
+**④ 压缩摘要消息要认出来**：Hermes 上下文压缩会在 transcript 留下一条内部机制消息（实测 11890 字符、`role=assistant`）。它既不是对话内容、也不该被合并进正文 → 标记 `compaction` 后渲染成折叠块。判据**照抄 Hermes 自身实现**（`api_server.py:439 _is_compressed_summary_message` / `context_compressor.py:376-382`）：**取前 280 字符做包含判断**。不要自己写 `startsWith('[CONTEXT COMPACTION')` —— 真实那条消息开头是 `[PRIOR CONTEXT — for reference only…]`，标记在 100 字符之后，startsWith 会漏判。
+
+**⑤ 怎么验证的（可复现，这是本项目最强的一种验证）**：写一次性 spec，用**未改动的 store 源码**打真实 API（包装 `globalThis.fetch`：相对路径改写成 `http://127.0.0.1:8642` + 注入 `Bearer`，即 nginx 在生产做的那件事），逐页 `loadEarlier()` 到没有更早，再断言 `store.messages` 与「一次全量读后 `normalize`」的结果 **`toEqual` 逐字段相等**。这一条断言同时覆盖漏、重、边界合并三类错误。实测该会话 206 条原始消息 → 15 条界面消息，偏移位移造成的重叠被正确去重。
+
+```bash
+cd /opt/data/hermes-chat-lite
+set -a && . /opt/data/.env && set +a
+npx vitest run src/xxx.verify.spec.ts     # 临时核验脚本：跑完就删，别混进 npm test
+```
+
+**副作用提示**：合并后「界面消息数」≠「transcript 条数」（该会话 206 → 15）。客服式对账、截图比对时不要拿界面条数当借口数。
+
 ---
 
 ## 6. UI 规范
@@ -672,6 +704,7 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | 每轮统计页脚 | 用真实数据按前端同样算法渲染 | ✅ 输出 `⏱ 3.6s · 输入 27.3k · 缓存 26.6k (97%) · 输出 20` |
 | 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 280KB（gzip 109KB）/ CSS 25.4KB |
 | 界面优化三件套（v1.1） | `vitest` + 产物 CSS 核验 | ✅ 新增 17 条（54/54 全过）：搜索过滤/无命中空态/清空、折叠持久化、主题切换与持久化、隐私模式不抛异常；`dist/assets/*.css` 含 39 条 `:is(.dark *)` 与 `.dark .hljs-*` 规则；`dist/index.html` 含首帧防闪白脚本 |
+| 长会话可读性（v1.2） | `vitest` + **真实 API 端到端** | ✅ 新增 15 条（69/69 全过）：分页 offset/到底判定/位移去重/边界合并/压缩摘要不污染正文；真实会话 206 条原始消息逐页加载后与全量读 `toEqual` **完全相等**，会话第一条已可见 |
 | 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
 | Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |
 
@@ -715,3 +748,5 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 24. **★★ 测试里 `localStorage` 是 undefined（Node 22+ 遮蔽 jsdom）** → 裸 jsdom 明明有（`typeof window.localStorage === 'object'`），但在 vitest 里 `globalThis.localStorage` 已被 **Node 22+ 内置的实验性实现**占住：没有 `--localstorage-file` 时取值为 `undefined` 并打印 `ExperimentalWarning: localStorage is not available...`，把 jsdom 那份遮蔽掉。症状是 `Cannot read properties of undefined (reading 'clear')`，会误以为是 jsdom 不支持。修法：`src/test-setup.ts` 装一个语义完整的内存 `Storage`（不要用 mock 调用次数糊过去，那样测的不是真逻辑），并给 jsdom 一个真实 `url`（`environmentOptions`，否则不透明 origin 下 jsdom 根本不建 localStorage）。
 25. **★ 暗色模式三处必须同步改** → `index.html` 内联脚本（首帧前定主题，防闪白）+ `lib/theme.ts`（运行时切换）+ `tailwind.config.js` 的 `darkMode: 'class'`。漏掉第三处时**不会报错**，只是所有 `dark:` 类被静默丢弃、界面看起来完全没切。核验方式：构建后在 `dist/assets/*.css` 里数 `:is(.dark *)` 出现次数（当前 39 条）。注意 Tailwind 3.4 生成的是 `:is(.dark *)` 形式，**不是** `.dark .bg-gray-800`，用后一种模式 grep 会得到 0 并误判成"配置没生效"。
 26. **★ hljs 暗色不能直接再引一份 `github-dark.css`** → CSS 不支持给 `@import` 加作用域，引进来会在浅色模式下也生效。做法是手写 `.dark .hljs-*` 调色板（`.dark .hljs` 的优先级高于 `.hljs`，能覆盖 `github.css` 的 `background:#fff`），代码块底色由 `.md-body pre` 的 `dark:bg-gray-900` 负责，`.dark .hljs` 只把背景设为透明。
+27. **★ 历史分页的 offset 锚定在"最新"，不是会话开头** → `order` 只有 `oldest|latest`（传 `earliest` 直接 400：`order must be one of: oldest, latest`）；`latest` + `offset=N` 是"从最新往回数第 N 条"，所以**发过新消息后已加载窗口会整体后移并与新页重叠 → 必须按 id 去重**；接口不返回总数，"还有没有更早"只能靠 `returned === limit` 判断（messages 的 limit 上限实测 500）。改动分页相关代码时，务必用 §5.9 ⑤ 那个"逐页加载 vs 一次全量读 `toEqual`"的核验方法重跑一遍。
+28. **★★ 合并连续 assistant 之后，不能再用界面消息去重** → 合并只保留该组最后一条的 id，中间 id 从界面上消失；拿 `store.messages` 的 `srcId` 去重会漏（自测已复现：同一段被加载两次）。要单独维护 `loadedIds`。同理，**压缩摘要消息不能靠 `startsWith('[CONTEXT COMPACTION')` 识别** —— 真实那条以 `[PRIOR CONTEXT — for reference only…]` 开头，标记在 100 字符之后，必须用 Hermes 压缩器那套"前 280 字符包含标记"的判据（见 `lib/messages.ts`）。

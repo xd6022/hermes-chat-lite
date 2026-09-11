@@ -16,6 +16,7 @@ import {
   HermesApiError,
   streamChat,
 } from '../api/hermes'
+import { isCompactionNote } from '../lib/messages'
 import type {
   HermesMessage,
   HermesSession,
@@ -38,6 +39,16 @@ export interface UiMessage {
   error?: string | null
   /** 该轮的统计（仅助手消息、且本轮成功结束时才有） */
   stats?: TurnStats
+  /**
+   * 服务端消息 id。两个用途：
+   *  1. 加载更早的历史时去重（offset 从最新往回数，发过新消息后窗口会整体位移，
+   *     位移量正好等于新增消息数 → 会重叠，必须按 id 去重）
+   *  2. 合并分页边界上的连续 assistant 时确定归属
+   * 乐观插入（还在流式中）的消息没有 id。
+   */
+  srcId?: number
+  /** 这是 Hermes 的上下文压缩摘要消息（内部机制，折叠显示、不参与合并） */
+  compaction?: boolean
 }
 
 /**
@@ -83,6 +94,11 @@ export const store = reactive({
   messages: [] as UiMessage[],
   messagesLoading: false,
 
+  /* 历史分页：offset 从【最新】往回数（实测语义，见 §5.9） */
+  rawCount: 0,
+  hasMoreHistory: false,
+  historyLoading: false,
+
   /* 轮次状态 */
   streaming: false,
   bootError: null as string | null,
@@ -98,6 +114,14 @@ export const store = reactive({
 })
 
 let abortCtl: AbortController | null = null
+
+/**
+ * 已加载过的原始消息 id（分页去重用）。
+ * 为什么不能用 store.messages 里的 srcId：连续 assistant 合并后，一个界面消息
+ * 只保留该组最后一条的 id，中间那些 id 从界面上消失了 —— 拿它去重会漏，
+ * 于是同一段内容会被加载两次（自测已复现：assistant-70 出现两次）。
+ */
+let loadedIds = new Set<number>()
 
 /* ---------------- 工具函数 ---------------- */
 
@@ -128,10 +152,17 @@ function textOf(m: HermesMessage): string {
 }
 
 /**
- * 历史消息过滤（设计文档 3.3 / 12 章）：
- *  1. 丢掉非 user/assistant（tool / system / 压缩摘要）
+ * 历史消息 → 界面消息（设计文档 3.3 / 12 章）：
+ *  1. 丢掉非 user/assistant（tool / system）
  *  2. 丢掉 content 为空的 assistant（那是工具调用轮，界面不该出现空泡泡）
  *  3. content 为数组时取 text 片段拼接
+ *  4. 压缩摘要消息单独标记（折叠显示，且不参与合并）
+ *  5. **连续 assistant 合并成一段**
+ *
+ * 为什么必须合并：一次工具轮次里模型可能说好几段话，transcript 里就是连续多条
+ * assistant。实测本会话有一条 19 条连续的 assistant（每段都是我一次工具轮次的
+ * 短句）。分开渲染 = 段与段之间 24px 间距 + 复制出来多空行，读起来像"自动加了
+ * 换行"；合并后同一条回答连成一段，与流式时的观感也一致（流式本来就只有一块）。
  */
 export function normalize(raw: HermesMessage[]): UiMessage[] {
   const out: UiMessage[] = []
@@ -139,9 +170,53 @@ export function normalize(raw: HermesMessage[]): UiMessage[] {
     if (m.role !== 'user' && m.role !== 'assistant') continue
     const text = textOf(m)
     if (!text.trim()) continue
-    out.push({ key: `h_${m.id}`, role: m.role, content: text })
+
+    if (m.role === 'assistant' && isCompactionNote(text)) {
+      out.push({ key: `h_${m.id}`, role: 'assistant', content: text, srcId: m.id, compaction: true })
+      continue
+    }
+
+    const prev = out[out.length - 1]
+    if (m.role === 'assistant' && prev && prev.role === 'assistant' && !prev.compaction) {
+      prev.content = `${prev.content}\n\n${text}`
+      prev.srcId = m.id
+      continue
+    }
+    out.push({ key: `h_${m.id}`, role: m.role, content: text, srcId: m.id })
   }
   return out
+}
+
+/** 一页历史消息的条数（服务端 messages 的 limit 上限实测是 500） */
+export const HISTORY_PAGE = 100
+
+/**
+ * 把"更早的一页"拼到前面，并在分页边界处补一次合并 —— 一条几十段的 assistant
+ * 会被分页切开（前 100 条一页），不补的话边界处还会留下那 24px 的缝。
+ */
+export function prependEarlier(older: UiMessage[], current: UiMessage[]): UiMessage[] {
+  if (!older.length) return current
+  if (!current.length) return older
+  const last = older[older.length - 1]
+  const first = current[0]
+  if (
+    last.role === 'assistant' &&
+    first.role === 'assistant' &&
+    !last.compaction &&
+    !first.compaction
+  ) {
+    const merged: UiMessage = {
+      ...last,
+      content: `${last.content}\n\n${first.content}`,
+      // 保留较新那条的运行时附注（统计/错误/流式标记）
+      stats: first.stats ?? last.stats,
+      error: first.error ?? last.error,
+      streaming: first.streaming ?? last.streaming,
+      srcId: first.srcId ?? last.srcId,
+    }
+    return [...older.slice(0, -1), merged, ...current.slice(1)]
+  }
+  return [...older, ...current]
 }
 
 /* ---------------- 动作 ---------------- */
@@ -179,14 +254,50 @@ export async function openSession(id: string): Promise<void> {
   store.messagesLoading = true
   store.run.phase = 'idle'
   store.run.timeline = []
+  // 分页状态必须跟着会话重置，否则会把上一个会话的 offset 用到新会话上
+  store.rawCount = 0
+  store.hasMoreHistory = false
   try {
-    const res = await getMessages(id, 100)
+    const res = await getMessages(id, HISTORY_PAGE, 0)
     store.messages = normalize(res.data)
+    loadedIds = new Set(res.data.map((m) => m.id))
+    store.rawCount = res.data.length
+    // 返回条数等于一页 → 可能还有更早的（真实会话动辄上百条，只取最近 100 条
+    // 会让会话开头整段看不到，这就是"最上面的消息只到某一条"的原因）
+    store.hasMoreHistory = res.data.length >= HISTORY_PAGE
   } catch (e) {
     store.messages = []
     store.bootError = msgOf(e)
   } finally {
     store.messagesLoading = false
+  }
+}
+
+/**
+ * 加载更早的历史（点"加载更早的消息"）。
+ *
+ * 分页语义（实测 2026-09-11，见 docs §5.9）：
+ *  - `order=latest` + `offset=N` = 从【最新】往回数第 N 条起的一页，页内按时间正序，无重叠
+ *  - 合法 order 只有 `oldest | latest`（`earliest` 直接 400）
+ *  - messages 的 limit 上限实测 500
+ *  - offset 锚定在"最新"，所以发过新消息后窗口会整体后移，与已加载内容重叠 → 按 id 去重
+ */
+export async function loadEarlier(): Promise<void> {
+  const sid = store.currentId
+  if (!sid || store.streaming || store.historyLoading || !store.hasMoreHistory) return
+  store.historyLoading = true
+  try {
+    const res = await getMessages(sid, HISTORY_PAGE, store.rawCount)
+    const fresh = res.data.filter((m) => !loadedIds.has(m.id))
+    for (const m of fresh) loadedIds.add(m.id)
+    if (fresh.length) store.messages = prependEarlier(normalize(fresh), store.messages)
+    store.rawCount += res.data.length
+    // 两种"到底了"：不满一页，或这一页全是重复（窗口已位移到没有新内容）
+    store.hasMoreHistory = res.data.length >= HISTORY_PAGE && fresh.length > 0
+  } catch (e) {
+    store.bootError = msgOf(e)
+  } finally {
+    store.historyLoading = false
   }
 }
 
@@ -196,6 +307,9 @@ export async function newChat(): Promise<string | null> {
     const res = await createSession()
     store.currentId = res.session.id
     store.messages = []
+    loadedIds = new Set()
+    store.rawCount = 0
+    store.hasMoreHistory = false
     store.bootError = null
     store.run.phase = 'idle'
     store.run.timeline = []

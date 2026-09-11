@@ -206,3 +206,49 @@ describe('界面：加载更早按钮', () => {
     })
   })
 })
+
+describe('界面：划到顶自动加载（按钮只是兜底）', () => {
+  it('滚到顶部附近自动请求下一页，不用点按钮', async () => {
+    const chat = await freshModule()
+    const ChatWindow = (await import('../components/ChatWindow.vue')).default
+
+    await chat.openSession('s1')
+    const w = mount(ChatWindow)
+    expect(calls.some((c) => c.includes('offset=100'))).toBe(false)
+
+    // jsdom 没有布局：scrollTop 读回 0（≤ 60px 阈值），等价于"划到顶"
+    await w.find('[data-testid="scroller"]').trigger('scroll')
+    await vi.waitFor(() => {
+      expect(calls.some((c) => c.includes('offset=100'))).toBe(true)
+    })
+  })
+
+  it('到底之后滚动不再发请求', async () => {
+    const chat = await freshModule()
+    const ChatWindow = (await import('../components/ChatWindow.vue')).default
+
+    await chat.openSession('s1')
+    const w = mount(ChatWindow)
+    await chat.loadEarlier() // 翻到底
+    expect(chat.store.hasMoreHistory).toBe(false)
+
+    const before = calls.length
+    await w.find('[data-testid="scroller"]').trigger('scroll')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(calls.length).toBe(before)
+  })
+
+  it('正在加载时滚动不重复发请求', async () => {
+    const chat = await freshModule()
+    const ChatWindow = (await import('../components/ChatWindow.vue')).default
+
+    await chat.openSession('s1')
+    const w = mount(ChatWindow)
+    chat.store.historyLoading = true
+
+    const before = calls.length
+    await w.find('[data-testid="scroller"]').trigger('scroll')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(calls.length).toBe(before)
+  })
+})

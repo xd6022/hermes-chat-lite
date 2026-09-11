@@ -16,6 +16,12 @@ const scroller = ref<HTMLElement | null>(null)
 const inputRef = ref<InstanceType<typeof InputBox> | null>(null)
 const stick = ref(true)
 
+/**
+ * 划到顶部这个距离内就自动加载更早的历史（滚轮/触摸都一样触发）。
+ * 阈值不用 0：等真的贴到 0 才开始加载，用户会先看到一个空档再蹦出新内容。
+ */
+const AUTO_TOP_PX = 60
+
 const EXAMPLES = [
   '看看 510210 现在的盘面',
   '帮我查一下 hermes_stock 里最近的交易记录',
@@ -32,6 +38,8 @@ function onScroll(): void {
   const el = scroller.value
   if (!el) return
   stick.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  // 划到顶附近 → 自动翻页（earlier() 里会补偿 scrollTop，所以视口不会跳）
+  if (el.scrollTop <= AUTO_TOP_PX) void earlier()
 }
 
 async function toBottom(): Promise<void> {
@@ -45,8 +53,13 @@ async function toBottom(): Promise<void> {
  * 必须自己算，因为 prepend 会让 scrollHeight 一下变大 —— 不补偿就会出现
  * "点一下、内容跳到最上面/最下面"的错觉。同时临时关掉跟随底部（否则
  * tail 变化会触发 toBottom，把用户刚要看的历史顶走）。
+ *
+ * 重入由 loadEarlier() 自己兜底（historyLoading / hasMoreHistory / streaming），
+ * 所以滚动事件狂发也不会重复请求；而且下面的 scrollTop 补偿会把位置推出
+ * 触发阈值，天然形成"一次滚动只加载一页"。
  */
 async function earlier(): Promise<void> {
+  if (!store.hasMoreHistory || store.historyLoading || store.streaming) return
   const el = scroller.value
   const prevHeight = el?.scrollHeight ?? 0
   const prevTop = el?.scrollTop ?? 0
@@ -99,7 +112,12 @@ function retry(): void {
     </div>
 
     <!-- 消息区 -->
-    <div ref="scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto" @scroll="onScroll">
+    <div
+      ref="scroller"
+      data-testid="scroller"
+      class="thin-scroll min-h-0 flex-1 overflow-y-auto"
+      @scroll.passive="onScroll"
+    >
       <!-- 空态 -->
       <div
         v-if="!store.messages.length && !store.messagesLoading"
@@ -136,7 +154,8 @@ function retry(): void {
 
       <!-- 消息 -->
       <div v-else class="mx-auto max-w-chat px-4 py-6">
-        <!-- 更早的历史：不满一页就说明到底了，按钮自动消失 -->
+        <!-- 更早的历史：划到顶会自动加载，这个按钮是手动兜底 + 加载中提示 -->
+        <!-- （内容不足一屏时不会产生滚动事件，自动加载永远等不到，只能点它） -->
         <div v-if="store.hasMoreHistory" class="mb-4 flex justify-center">
           <button
             type="button"

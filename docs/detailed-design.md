@@ -20,7 +20,7 @@
 | P5 安全加固 | ⬜ 未开始（已定用 basic_auth） | Caddy basic_auth | 未带口令返回 401 |
 | P6 每轮统计（v1.1 追加） | ✅ 完成 | `TurnStats`（`stores/chat.ts`）+ `MessageItem` 页脚 + `getSession()` | 单测 4 条 + **真实接口自检：未命中Δ + 命中Δ === usage.input_tokens** |
 | P7 界面优化（v1.1 追加） | ✅ 完成 | 侧栏搜索（`Sidebar.vue`）+ 桌面折叠（`App.vue`）+ 黑夜模式（`lib/theme.ts`） | 新增 17 条单测（54/54 全过）；产物 CSS 核验含 39 条 `:is(.dark *)` 暗色规则；`vue-tsc` 0 错 |
-| P8 长会话完整可读（v1.2 追加） | ✅ 完成 | 历史分页 `loadEarlier()` + 连续 assistant 合并（`normalize`）+ 压缩摘要折叠（`lib/messages.ts`、`MessageItem`） | 新增 15 条单测（69/69 全过）；**真实链路核验：逐页加载结果与全量读 `toEqual` 完全相等**（206 条会话，含偏移位移去重） |
+| P8 长会话完整可读（v1.2 追加） | ✅ 完成 | 历史分页 `loadEarlier()`（划到顶自动触发 + 按钮兜底）+ 连续 assistant 合并（`normalize`）+ 压缩摘要折叠（`lib/messages.ts`、`MessageItem`） | 新增 18 条单测（72/72 全过），含"滚动到顶自动加载/到底不再请求/加载中不重复"；**真实链路核验：逐页加载结果与全量读 `toEqual` 完全相等**（206 条会话，含偏移位移去重） |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -567,6 +567,13 @@ npx vitest run src/xxx.verify.spec.ts     # 临时核验脚本：跑完就删，
 
 **副作用提示**：合并后「界面消息数」≠「transcript 条数」（该会话 206 → 15）。客服式对账、截图比对时不要拿界面条数当借口数。
 
+**⑥ 划到顶自动加载**（v1.3）：`onScroll` 里判 `scrollTop <= 60px` 就直接调 `earlier()`，滚轮和触摸都走同一条路径。
+
+- 阈值取 60 而不是 0：贴到 0 才开始加载，用户会先看到一段空档再蹦出新内容。
+- **不会重复请求**：`loadEarlier()` 自身有 `historyLoading / hasMoreHistory / streaming` 三重闸门；而且加载后的 `scrollTop` 补偿会把位置推出阈值，天然形成"一次滚动只加载一页"。
+- **按钮必须保留**（别当成冗余清理掉）：内容不足一屏时**不产生滚动事件**，自动加载永远等不到 —— 那个场景只能点按钮。按钮同时是"加载中…"的反馈位。
+- 滚动监听用 `@scroll.passive`（不调 preventDefault，被动监听让浏览器滚动更顺）。
+
 ---
 
 ## 6. UI 规范
@@ -704,7 +711,7 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | 每轮统计页脚 | 用真实数据按前端同样算法渲染 | ✅ 输出 `⏱ 3.6s · 输入 27.3k · 缓存 26.6k (97%) · 输出 20` |
 | 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 280KB（gzip 109KB）/ CSS 25.4KB |
 | 界面优化三件套（v1.1） | `vitest` + 产物 CSS 核验 | ✅ 新增 17 条（54/54 全过）：搜索过滤/无命中空态/清空、折叠持久化、主题切换与持久化、隐私模式不抛异常；`dist/assets/*.css` 含 39 条 `:is(.dark *)` 与 `.dark .hljs-*` 规则；`dist/index.html` 含首帧防闪白脚本 |
-| 长会话可读性（v1.2） | `vitest` + **真实 API 端到端** | ✅ 新增 15 条（69/69 全过）：分页 offset/到底判定/位移去重/边界合并/压缩摘要不污染正文；真实会话 206 条原始消息逐页加载后与全量读 `toEqual` **完全相等**，会话第一条已可见 |
+| 长会话可读性（v1.2→v1.3） | `vitest` + **真实 API 端到端** | ✅ 新增 18 条（72/72 全过）：分页 offset/到底判定/位移去重/边界合并/压缩摘要不污染正文/滚到顶自动加载与三重闸门；真实会话 206 条原始消息逐页加载后与全量读 `toEqual` **完全相等**，会话第一条已可见 |
 | 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
 | Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |
 
@@ -750,3 +757,4 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 26. **★ hljs 暗色不能直接再引一份 `github-dark.css`** → CSS 不支持给 `@import` 加作用域，引进来会在浅色模式下也生效。做法是手写 `.dark .hljs-*` 调色板（`.dark .hljs` 的优先级高于 `.hljs`，能覆盖 `github.css` 的 `background:#fff`），代码块底色由 `.md-body pre` 的 `dark:bg-gray-900` 负责，`.dark .hljs` 只把背景设为透明。
 27. **★ 历史分页的 offset 锚定在"最新"，不是会话开头** → `order` 只有 `oldest|latest`（传 `earliest` 直接 400：`order must be one of: oldest, latest`）；`latest` + `offset=N` 是"从最新往回数第 N 条"，所以**发过新消息后已加载窗口会整体后移并与新页重叠 → 必须按 id 去重**；接口不返回总数，"还有没有更早"只能靠 `returned === limit` 判断（messages 的 limit 上限实测 500）。改动分页相关代码时，务必用 §5.9 ⑤ 那个"逐页加载 vs 一次全量读 `toEqual`"的核验方法重跑一遍。
 28. **★★ 合并连续 assistant 之后，不能再用界面消息去重** → 合并只保留该组最后一条的 id，中间 id 从界面上消失；拿 `store.messages` 的 `srcId` 去重会漏（自测已复现：同一段被加载两次）。要单独维护 `loadedIds`。同理，**压缩摘要消息不能靠 `startsWith('[CONTEXT COMPACTION')` 识别** —— 真实那条以 `[PRIOR CONTEXT — for reference only…]` 开头，标记在 100 字符之后，必须用 Hermes 压缩器那套"前 280 字符包含标记"的判据（见 `lib/messages.ts`）。
+29. **★ "加载更早"按钮不能因为有了自动加载就删掉** → 自动加载挂在 `scroll` 事件上，而**内容不足一屏时容器根本不产生滚动事件**，用户永远触发不了 → 必须有可点的按钮兜底（它同时是"加载中…"的反馈位）。另外自动加载的阈值是 `scrollTop <= 60px` 而不是 `== 0`，贴到 0 才加载会先露一段空档。

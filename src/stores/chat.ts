@@ -10,6 +10,7 @@ import { reactive } from 'vue'
 import {
   createSession,
   getMessages,
+  getSession,
   getSessions,
   health,
   HermesApiError,
@@ -18,9 +19,11 @@ import {
 import type {
   HermesMessage,
   HermesSession,
+  HermesUsage,
   SseAssistantCompleted,
   SseDelta,
   SseError,
+  SseRunCompleted,
   SseToolLifecycle,
   SseToolProgress,
 } from '../api/types'
@@ -33,6 +36,29 @@ export interface UiMessage {
   streaming?: boolean
   /** 该条消息级别的错误 */
   error?: string | null
+  /** 该轮的统计（仅助手消息、且本轮成功结束时才有） */
+  stats?: TurnStats
+}
+
+/**
+ * 每轮统计。口径经实测核对（三者自洽）：
+ *   usage.input_tokens       本轮总输入（临时值）
+ *   会话记录 input_tokens    累计【未命中缓存】的输入
+ *   会话记录 cache_read_tokens 累计【命中缓存】的输入
+ *   未命中Δ + 命中Δ === usage.input_tokens（实测 706 + 26624 = 27330 ✓）
+ */
+export interface TurnStats {
+  /** 墙钟耗时（用户真实等待时间） */
+  ms: number
+  /** 本轮总输入 */
+  inputTokens: number
+  /** 本轮未命中缓存的输入 */
+  uncachedInput: number
+  /** 本轮命中缓存的输入 */
+  cacheRead: number
+  /** 缓存命中率 0..1；取不到为 null */
+  cacheRate: number | null
+  outputTokens: number
 }
 
 export type RunPhase = 'idle' | 'thinking' | 'tool' | 'writing' | 'done' | 'aborted' | 'error'
@@ -218,6 +244,9 @@ export async function send(text: string): Promise<void> {
   }
   const sid = store.currentId as string
 
+  // 本轮开始前的累计计数基线（用于算本轮缓存命中）
+  const before = await counters(sid)
+
   // 乐观插入：用户消息 + 助手空占位
   store.messages.push({ key: tempKey(), role: 'user', content })
   store.messages.push({ key: tempKey(), role: 'assistant', content: '', streaming: true })
@@ -230,6 +259,7 @@ export async function send(text: string): Promise<void> {
 
   let sawRunCompleted = false
   let sawError = false
+  let turnUsage: HermesUsage | null = null
 
   try {
     await streamChat(
@@ -287,6 +317,7 @@ export async function send(text: string): Promise<void> {
             // 注意：payload.messages 是整轮 transcript（含工具结果），只用于回填时间线，
             // 绝不渲染成聊天消息（会与正文重复）。
             sawRunCompleted = true
+            turnUsage = (data as SseRunCompleted).usage ?? null
             break
           }
           case 'error': {
@@ -323,7 +354,62 @@ export async function send(text: string): Promise<void> {
     store.run.endedAt = performance.now()
     store.run.currentTool = null
     store.run.toolPreview = null
+
+    if (sawRunCompleted) {
+      // 每轮统计：耗时 / 输入 / 输出 / 缓存命中率（取本轮结束后的累计计数做差）
+      const after = await counters(sid)
+      asst.stats = buildStats({
+        ms: store.run.endedAt - store.run.startedAt,
+        usage: turnUsage,
+        before,
+        after,
+      })
+    }
+
     // 新会话首轮结束后 Hermes 才会生成标题，刷新侧栏才能看到
     void loadSessions()
+  }
+}
+
+interface Counters {
+  input: number
+  cache: number
+}
+
+/** 读会话累计计数；失败返回 null（此时不显示缓存率，耗时与 token 照常显示） */
+async function counters(id: string): Promise<Counters | null> {
+  try {
+    const s = (await getSession(id)).session
+    return { input: s.input_tokens ?? 0, cache: s.cache_read_tokens ?? 0 }
+  } catch {
+    return null
+  }
+}
+
+function buildStats(args: {
+  ms: number
+  usage: HermesUsage | null
+  before: Counters | null
+  after: Counters | null
+}): TurnStats {
+  const { ms, usage, before, after } = args
+  let uncachedInput = 0
+  let cacheRead = 0
+  let cacheRate: number | null = null
+  if (before && after) {
+    uncachedInput = Math.max(0, after.input - before.input)
+    cacheRead = Math.max(0, after.cache - before.cache)
+    const total = uncachedInput + cacheRead
+    cacheRate = total > 0 ? cacheRead / total : null
+  }
+  const usageIn = Number(usage?.input_tokens ?? 0)
+  const usageOut = Number(usage?.output_tokens ?? 0)
+  return {
+    ms,
+    inputTokens: usageIn > 0 ? usageIn : uncachedInput + cacheRead,
+    outputTokens: usageOut > 0 ? usageOut : 0,
+    uncachedInput,
+    cacheRead,
+    cacheRate,
   }
 }

@@ -48,7 +48,8 @@ const label = computed(() => {
     case 'writing':
       return '正在输出…'
     case 'done':
-      return `完成 · ${secs.value}${toolCount.value ? ` · ${toolCount.value} 个工具调用` : ''}`
+      // 完成后的数字（耗时/token/缓存）在消息下方常驻显示，这里不重复
+      return '完成'
     case 'aborted':
       return '回复中断（未收到 run.completed）'
     case 'error':

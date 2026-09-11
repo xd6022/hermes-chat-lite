@@ -15,6 +15,12 @@ export interface HermesSession {
   end_reason?: string | null
   last_active: number // Unix 秒，列表按此倒序
   message_count?: number
+  // 累计计数（注意：都是【会话累计】，要算每轮必须做差）
+  input_tokens?: number // 累计【未命中缓存】的输入
+  output_tokens?: number
+  cache_read_tokens?: number // 累计【命中缓存】的输入
+  cache_write_tokens?: number
+  api_call_count?: number
   preview?: string | null
   parent_session_id?: string | null
   pinned?: boolean
@@ -59,6 +65,22 @@ export interface MessageListResponse {
   session_id: string
   data: HermesMessage[]
   pagination: { limit: number; offset: number; order: string; returned: number }
+}
+
+export interface SessionResponse {
+  object: 'hermes.session'
+  session: HermesSession
+}
+
+/**
+ * run.completed 的 usage（实测：**每轮**值，不是会话累计）。
+ * 口径核对：usage.input_tokens = 本轮总输入 = 未命中Δ + 缓存命中Δ
+ */
+export interface HermesUsage {
+  input_tokens?: number
+  output_tokens?: number
+  total_tokens?: number
+  runtime?: Record<string, unknown>
 }
 
 export interface CreateSessionResponse {
@@ -113,7 +135,7 @@ export interface SseAssistantCompleted extends SseBase {
 export interface SseRunCompleted extends SseBase {
   message_id?: string
   messages?: HermesMessage[]
-  usage?: Record<string, unknown>
+  usage?: HermesUsage
 }
 export interface SseError extends SseBase {
   message: string

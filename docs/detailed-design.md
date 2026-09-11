@@ -18,6 +18,7 @@
 | P3 流式 | ✅ 完成 | `src/api/sse.ts` `RunStatus.vue` `stores/chat.ts` | 真实接口端到端跑通（delta 流式 + tool 事件 + run.completed）；半帧切片/中文多字节切分/keepalive 用例全过 |
 | P4 部署 | 🟡 文件完成，**待宿主机验证** | `Dockerfile` `nginx.conf` `docker-compose.yml` `.env.example` | 本容器未挂 docker daemon，无法在此构建；命令见 §8 |
 | P5 安全加固 | ⬜ 未开始（已定用 basic_auth） | Caddy basic_auth | 未带口令返回 401 |
+| P6 每轮统计（v1.1 追加） | ✅ 完成 | `TurnStats`（`stores/chat.ts`）+ `MessageItem` 页脚 + `getSession()` | 单测 4 条 + **真实接口自检：未命中Δ + 命中Δ === usage.input_tokens** |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -257,7 +258,28 @@ Content-Type: application/json
 | `tool.progress` | `tool_name` + `delta`；模型思考时 `tool_name === "_thinking"`，`delta` 是思考首行 | 完整思考内容 |
 | `run.completed` | `messages`（整轮 transcript，**含工具结果**）+ `usage` | — |
 
-→ 想要"工具执行结果"（如 `write_file ✓ 784 bytes`），只能在 `run.completed` 到达后从 `messages` 里回填时间线，**但不要把 `messages` 渲染成聊天消息**。
+→ 想要"工具执行结果"（如 `write_file ✓ 784 bytes`），只能在 `run.completed` 到达后从 `messages` 里按 `tool_call_id` 回填时间线，**但不要把 `messages` 渲染成聊天消息**。
+
+### 2.4 token 口径（实测核对，做每轮统计必须按这个来）
+
+三个数字来源不同、语义不同，混用必然算错：
+
+| 来源 | 语义 | 实测核对 |
+| --- | --- | --- |
+| `run.completed.usage.input_tokens` | **本轮总输入**（临时值，不累计） | 连发两轮分别 27311 / 27330，量级相同 → 确认是每轮值 |
+| 会话记录 `input_tokens` | **累计**【未命中缓存】的输入 | 两轮后 1393 = 687 + 706 |
+| 会话记录 `cache_read_tokens` | **累计**【命中缓存】的输入 | 两轮后 53248 = 26624 + 26624 |
+
+**自检恒等式（实测精确成立）**：
+
+```
+本轮未命中Δ + 本轮命中Δ === 本轮 usage.input_tokens
+706        + 26624      === 27330   ✅
+```
+
+所以每轮统计 = 会话记录做差（拿缓存分项）+ usage（拿本轮总量）。缓存命中率 = 命中Δ ÷ (未命中Δ + 命中Δ)。
+**另外实测：`run.completed` 到达时会话记录已经是新值**（立即读 == +1.2s 再读），不需要等待或重试。
+失败降级：会话记录读不到时，缓存率留空，耗时/输入/输出照常显示。
 
 ---
 
@@ -437,6 +459,7 @@ export interface UiMessage {
 - **助手消息**：
   - 流式中：渲染已到达文本 + 末尾闪烁光标（`▍`，CSS 动画），`toolStatus` 以灰字小行显示在正文上方。
   - 完成后：整段 markdown 渲染。
+  - **完成后追加一行统计页脚**：`⏱ 3.6s · 输入 27.3k · 缓存 26.6k (97%) · 输出 20`（数据来自 `TurnStats`，见 §2.4 口径）。缓存率取不到时该段自动省略。
 - **用户消息**：纯文本（`white-space: pre-wrap`），不解析 markdown（避免误触发代码高亮），保留换行。
 - 代码块：`<pre><code class="hljs language-x">`，右上角"复制"按钮（`navigator.clipboard`），等宽字体。
 - markdown-it 配置：`linkify: true, breaks: true, html: false`（**html:false 是安全项**，防止 agent 输出里的原始 HTML 注入）。代码高亮用 `highlight.js` 在 `highlight` 回调里调用，失败则 fallback 为转义纯文本。
@@ -622,8 +645,10 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | --- | --- | --- |
 | SSE 解析器打真实接口 | node 直接跑 `src/api/sse.ts`（模拟反代注入鉴权头）打 `POST /api/sessions/{id}/chat/stream` | ✅ 事件序列 `run.started → message.started → tool.started → tool.completed → assistant.delta → tool.progress → assistant.completed → run.completed → done`；delta 分片 2（真流式）；`read_file` 工具事件收到；`run.completed` 收到 |
 | 历史消息过滤 | 同上，读回 `GET /messages` | ✅ 原始 4 条 → 界面可见 2 条，最后一条是 assistant |
-| 前端运行时 | `vitest`（jsdom + @vue/test-utils） | ✅ 31/31 通过（半帧切片、中文切在多字节中间、keepalive、过滤规则、输入法、App 集成） |
+| 前端运行时 | `vitest`（jsdom + @vue/test-utils） | ✅ 37/37 通过（半帧切片、中文切在多字节中间、keepalive、过滤规则、输入法、失败可见性、每轮统计、App 集成） |
 | Origin 403 修复 | 带 `Origin` 头打修复后的反代 | ✅ GET 200 / POST 201；对照：直连 8642 带同样 `Origin` 仍 403（反证触发点就是它） |
+| token 口径 | 真接口连发两轮，比对 usage 与两次会话记录 | ✅ 未命中Δ 706 + 命中Δ 26624 === usage.input_tokens 27330（精确）；`run.completed` 后立即读记录已是新值 → 无竞态 |
+| 每轮统计页脚 | 用真实数据按前端同样算法渲染 | ✅ 输出 `⏱ 3.6s · 输入 27.3k · 缓存 26.6k (97%) · 输出 20` |
 | 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 271KB（gzip 106KB） |
 | 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
 | Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |

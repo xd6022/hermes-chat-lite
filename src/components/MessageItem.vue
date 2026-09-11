@@ -10,6 +10,7 @@
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import type { UiMessage } from '../stores/chat'
 import { renderMarkdown } from '../lib/markdown'
+import { formatDurationMs, formatPercent, formatTokens } from '../lib/format'
 
 const props = defineProps<{ msg: UiMessage }>()
 
@@ -85,6 +86,18 @@ onBeforeUnmount(() => {
   <!-- 助手消息：文本流，不用气泡 -->
   <div v-else class="group">
     <div ref="bodyRef" class="md-body" v-html="html" />
+    <!-- 每轮统计：耗时 / 输入 / 输出 / 缓存命中率 -->
+    <p
+      v-if="msg.stats"
+      class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-5 text-gray-400"
+    >
+      <span title="本轮墙钟耗时">⏱ {{ formatDurationMs(msg.stats.ms) }}</span>
+      <span>· 输入 {{ formatTokens(msg.stats.inputTokens) }}</span>
+      <span v-if="msg.stats.cacheRate !== null" title="命中缓存的输入 token 数（不重复计费的部分）">
+        · 缓存 {{ formatTokens(msg.stats.cacheRead) }} ({{ formatPercent(msg.stats.cacheRate) }})
+      </span>
+      <span>· 输出 {{ formatTokens(msg.stats.outputTokens) }}</span>
+    </p>
     <p v-if="msg.error" class="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
       {{ msg.error }}
     </p>

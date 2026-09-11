@@ -83,3 +83,27 @@ export function relativeTime(ts: number, nowMs = Date.now()): string {
   if (hour < 24) return `${hour} 小时前`
   return formatDate(ts)
 }
+
+/* ---------- 每轮统计的展示格式 ---------- */
+
+/** token 数压缩：1234 → 1.2k，27330 → 27.3k */
+export function formatTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (n < 1000) return String(n)
+  if (n < 100_000) return `${(n / 1000).toFixed(1)}k`
+  return `${Math.round(n / 1000)}k`
+}
+
+/** 耗时：12.3s / 1m05s */
+export function formatDurationMs(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—'
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  return `${m}m${String(Math.round(s % 60)).padStart(2, '0')}s`
+}
+
+export function formatPercent(rate: number): string {
+  if (!Number.isFinite(rate)) return '—'
+  return `${Math.round(rate * 100)}%`
+}

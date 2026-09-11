@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { dayBucket, displayTitle, formatClock, groupSessions, tsToDate } from './format'
+import {
+  dayBucket,
+  displayTitle,
+  formatClock,
+  formatDurationMs,
+  formatPercent,
+  formatTokens,
+  groupSessions,
+  tsToDate,
+} from './format'
 import type { HermesSession } from '../api/types'
 
 function sess(id: string, lastActiveMs: number, extra: Partial<HermesSession> = {}): HermesSession {
@@ -60,5 +69,28 @@ describe('侧栏标题', () => {
 
   it('都没有时兜底', () => {
     expect(displayTitle(sess('a', 0, { title: '', preview: null }))).toBe('未命名会话')
+  })
+})
+
+describe('每轮统计的展示格式', () => {
+  it('formatTokens：千位压缩', () => {
+    expect(formatTokens(0)).toBe('0')
+    expect(formatTokens(-5)).toBe('0')
+    expect(formatTokens(999)).toBe('999')
+    expect(formatTokens(27330)).toBe('27.3k')
+    expect(formatTokens(141157)).toBe('141k')
+  })
+
+  it('formatDurationMs：秒/分', () => {
+    expect(formatDurationMs(38400)).toBe('38.4s')
+    expect(formatDurationMs(6600)).toBe('6.6s')
+    expect(formatDurationMs(65000)).toBe('1m05s')
+    expect(formatDurationMs(Number.NaN)).toBe('—')
+  })
+
+  it('formatPercent：四舍五入', () => {
+    expect(formatPercent(0.974)).toBe('97%')
+    expect(formatPercent(0)).toBe('0%')
+    expect(formatPercent(1)).toBe('100%')
   })
 })

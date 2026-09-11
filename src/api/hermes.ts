@@ -11,6 +11,7 @@ import type {
   CreateSessionResponse,
   HealthResponse,
   MessageListResponse,
+  SessionResponse,
   SessionListResponse,
 } from './types'
 
@@ -80,6 +81,14 @@ export function getMessages(sessionId: string, limit = 100): Promise<MessageList
   return request<MessageListResponse>(
     `/api/sessions/${encodeURIComponent(sessionId)}/messages?${q.toString()}`,
   )
+}
+
+/**
+ * 单个会话记录（含累计 token 计数）。
+ * 每轮统计靠它做差：input_tokens=累计未命中缓存，cache_read_tokens=累计命中缓存。
+ */
+export function getSession(sessionId: string): Promise<SessionResponse> {
+  return request<SessionResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)
 }
 
 /** 健康检查（Settings 面板的连接状态用）。 */

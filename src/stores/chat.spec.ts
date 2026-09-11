@@ -306,3 +306,90 @@ describe('失败必须可见（不能静默）', () => {
     expect(mod.store.bootError).toContain('Origin')
   })
 })
+
+describe('每轮统计（耗时 / 输入 / 输出 / 缓存命中率）', () => {
+  it('用会话累计计数做差算出本轮缓存命中，token 以 usage 为准', async () => {
+    let recReads = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/chat/stream')) {
+          const frames = [
+            'event: assistant.delta',
+            'data: {"delta":"好"}',
+            '',
+            'event: assistant.completed',
+            'data: {"content":"好"}',
+            '',
+            'event: run.completed',
+            'data: {"usage":{"input_tokens":27330,"output_tokens":53,"total_tokens":27383}}',
+            '',
+            'event: done',
+            'data: {}',
+            '',
+            '',
+          ].join('\n')
+          return new Response(frames, { status: 200 })
+        }
+        if (url === '/api/sessions/s1') {
+          recReads++
+          // 第 1 次读=本轮基线，第 2 次读=本轮结束（实测：run.completed 后立即读已是新值）
+          return jsonResponse({
+            object: 'hermes.session',
+            session:
+              recReads === 1
+                ? { id: 's1', input_tokens: 25263, cache_read_tokens: 2048, output_tokens: 25, started_at: 1, last_active: 1 }
+                : { id: 's1', input_tokens: 25969, cache_read_tokens: 28672, output_tokens: 78, started_at: 1, last_active: 1 },
+          })
+        }
+        if (url.startsWith('/api/sessions?')) {
+          return jsonResponse({ object: 'list', data: [], limit: 50, offset: 0, has_more: false })
+        }
+        throw new Error(`未预期的请求: ${url}`)
+      }),
+    )
+    const mod = await freshModule()
+    mod.store.currentId = 's1'
+    await mod.send('hi')
+
+    const st = mod.store.messages[1].stats
+    expect(st).toBeTruthy()
+    expect(st!.uncachedInput).toBe(706) // 25969 - 25263
+    expect(st!.cacheRead).toBe(26624) // 28672 - 2048
+    expect(st!.inputTokens).toBe(27330) // 以 usage 为准
+    expect(st!.outputTokens).toBe(53)
+    expect(st!.cacheRate).toBeCloseTo(26624 / 27330, 3) // 97.4%
+    expect(st!.ms).toBeGreaterThanOrEqual(0)
+    expect(recReads).toBe(2) // 基线一次 + 结束一次
+  })
+
+  it('取不到会话记录时不崩：token 照常显示，缓存率留空', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.endsWith('/chat/stream')) {
+          return new Response(
+            'event: run.completed\ndata: {"usage":{"input_tokens":100,"output_tokens":7}}\n\nevent: done\ndata: {}\n\n',
+            { status: 200 },
+          )
+        }
+        if (url === '/api/sessions/s1') return new Response('', { status: 500 })
+        if (url.startsWith('/api/sessions?')) {
+          return jsonResponse({ object: 'list', data: [], limit: 50, offset: 0, has_more: false })
+        }
+        throw new Error(`未预期的请求: ${url}`)
+      }),
+    )
+    const mod = await freshModule()
+    mod.store.currentId = 's1'
+    await mod.send('hi')
+
+    const st = mod.store.messages[1].stats
+    expect(st!.inputTokens).toBe(100)
+    expect(st!.outputTokens).toBe(7)
+    expect(st!.cacheRate).toBeNull()
+    expect(mod.store.run.phase).toBe('done')
+  })
+})

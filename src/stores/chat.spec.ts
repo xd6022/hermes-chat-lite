@@ -252,3 +252,46 @@ describe('会话列表与健康检查', () => {
     expect(mod.store.healthVersion).toBe('0.20.4')
   })
 })
+
+describe('失败必须可见（不能静默）', () => {
+  it('创建会话 401 时：bootError 给出人话、不留半截消息、不卡 streaming', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url === '/api/sessions') {
+          return new Response(
+            JSON.stringify({
+              error: { message: 'Invalid gateway API key (API_SERVER_KEY)', code: 'gateway_auth_failed' },
+            }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        throw new Error(`不该走到这里: ${url}`)
+      }),
+    )
+    const mod = await freshModule()
+    await mod.send('你是谁')
+
+    expect(mod.store.bootError).toBe('接口密钥无效或未注入（请检查反代配置）')
+    expect(mod.store.messages).toHaveLength(0)
+    expect(mod.store.streaming).toBe(false)
+  })
+
+  it('拉会话列表 401 时：bootError 有值（界面据此显示横幅）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+      ),
+    )
+    const mod = await freshModule()
+    await mod.loadSessions()
+    expect(mod.store.bootError).toBe('接口密钥无效或未注入（请检查反代配置）')
+    expect(mod.store.sessionsLoading).toBe(false)
+  })
+})

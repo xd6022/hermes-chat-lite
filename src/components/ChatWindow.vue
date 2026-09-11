@@ -4,7 +4,7 @@
  * 自动滚动策略：只有用户本来就在底部附近时才跟随，避免翻历史时被强行拽回。
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { store } from '../stores/chat'
+import { loadSessions, openSession, store } from '../stores/chat'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
 import InputBox from './InputBox.vue'
@@ -54,10 +54,31 @@ watch(
 onMounted(() => {
   void toBottom()
 })
+
+/** 出错后重试：有会话就重载当前会话，否则重拉列表 */
+function retry(): void {
+  store.bootError = null
+  if (store.currentId) void openSession(store.currentId)
+  else void loadSessions()
+}
 </script>
 
 <template>
   <section class="flex min-h-0 min-w-0 flex-1 flex-col">
+    <!-- 错误横幅：创建会话 / 拉列表失败时必须可见（否则点发送会"没反应"） -->
+    <div v-if="store.bootError" class="mx-auto w-full max-w-chat px-4 pt-3">
+      <div class="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+        <span class="flex-1 break-words">{{ store.bootError }}</span>
+        <button
+          type="button"
+          class="shrink-0 rounded px-2 py-0.5 text-xs transition hover:bg-red-100"
+          @click="retry()"
+        >
+          重试
+        </button>
+      </div>
+    </div>
+
     <!-- 消息区 -->
     <div ref="scroller" class="thin-scroll min-h-0 flex-1 overflow-y-auto" @scroll="onScroll">
       <!-- 空态 -->
@@ -93,9 +114,6 @@ onMounted(() => {
       <div v-else class="mx-auto max-w-chat space-y-6 px-4 py-6">
         <p v-if="truncated" class="rounded-lg bg-gray-50 px-3 py-2 text-center text-xs text-gray-400">
           仅显示最近 100 条消息
-        </p>
-        <p v-if="store.bootError" class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
-          {{ store.bootError }}
         </p>
         <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
       </div>

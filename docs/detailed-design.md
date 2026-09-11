@@ -509,7 +509,8 @@ export interface UiMessage {
 
 | 场景 | 表现 |
 | --- | --- |
-| 启动时 `/health` 失败 | 顶栏红点 + `无法连接 Hermes`，侧栏显示重试按钮 |
+| 启动时 `/health` 失败 | 顶栏红点 + `无法连接 Hermes`；**消息区上方红色错误横幅 + 重试按钮** |
+| 创建会话失败（如反代没注入 key → 401） | **必须显示可见横幅**（实测踩过：原来只在"已有消息"分支渲染错误，导致点发送毫无反应、只能去 F12 看） |
 | 会话列表为空 | 空态文案，引导新建 |
 | 历史消息 404（会话被删） | 提示"该会话已不存在"，自动回到空会话态 |
 | 流中断（网络/切后台） | 已渲染内容保留，标灰提示"回复中断"；刷新可看到落库部分 |
@@ -618,7 +619,7 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | --- | --- | --- |
 | SSE 解析器打真实接口 | node 直接跑 `src/api/sse.ts`（模拟反代注入鉴权头）打 `POST /api/sessions/{id}/chat/stream` | ✅ 事件序列 `run.started → message.started → tool.started → tool.completed → assistant.delta → tool.progress → assistant.completed → run.completed → done`；delta 分片 2（真流式）；`read_file` 工具事件收到；`run.completed` 收到 |
 | 历史消息过滤 | 同上，读回 `GET /messages` | ✅ 原始 4 条 → 界面可见 2 条，最后一条是 assistant |
-| 前端运行时 | `vitest`（jsdom + @vue/test-utils） | ✅ 28/28 通过（半帧切片、中文切在多字节中间、keepalive、过滤规则、输入法、App 集成） |
+| 前端运行时 | `vitest`（jsdom + @vue/test-utils） | ✅ 31/31 通过（半帧切片、中文切在多字节中间、keepalive、过滤规则、输入法、App 集成） |
 | 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 271KB（gzip 106KB） |
 | 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
 | Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |

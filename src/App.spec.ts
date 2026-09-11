@@ -101,4 +101,26 @@ describe('App 集成', () => {
     expect(text).toContain('Hermes API Server 正常')
     expect(text).toContain('Shift + Enter')
   })
+
+  it('密钥无效时显示可见错误横幅 + 重试（不能静默空白）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: { message: 'Invalid gateway API key (API_SERVER_KEY)', code: 'gateway_auth_failed' },
+            }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } },
+          ),
+      ),
+    )
+    const w = mount(App)
+    await flushPromises()
+
+    const text = w.text()
+    expect(text).toContain('接口密钥无效或未注入')
+    expect(text).toContain('重试')
+    expect(w.find('header').text()).toContain('未连接')
+  })
 })

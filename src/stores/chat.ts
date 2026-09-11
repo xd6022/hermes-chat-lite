@@ -210,7 +210,11 @@ export async function send(text: string): Promise<void> {
 
   if (!store.currentId) {
     const id = await newChat()
-    if (!id) return
+    if (!id) {
+      // 建会话失败（常见：反代没注入 key → 401）。必须让用户看见，不能静默返回。
+      store.bootError = store.bootError ?? '无法创建会话'
+      return
+    }
   }
   const sid = store.currentId as string
 

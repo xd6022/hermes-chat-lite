@@ -50,8 +50,8 @@ export function securityBlock(text: string): SecurityBlock | null {
 
   const hint =
     kind === 'approval'
-      ? 'Hermes 的安全闸门要求人工批准这次操作，但网页端没有审批通道（审批只存在于 /v1/runs 接口），所以它被直接拒绝了。需要放行请到 TUI 里操作。'
-      : '被 Hermes 的安全策略（Tirith 扫描 / 硬规则 / 用户自定义 deny 规则）拦下，这次操作没有被执行。'
+      ? '网页端没有审批通道（Hermes 的审批只接在 /v1/runs 接口上，chat/stream 这条路上没注册通知者），所以这次调用被**当场拒绝、不会执行**，并不是"排队等你批准"。要执行它，得在 TUI 里重新让它做一次 —— 那边才会弹批准/拒绝。'
+      : '被 Hermes 的安全策略拦下（hardline 硬规则 / 用户自定义 deny 规则等），这次操作没有执行；这类规则在任何客户端都不会放行。'
 
   const i = t.indexOf('BLOCKED')
   const snippet = t.slice(i, i + 240)

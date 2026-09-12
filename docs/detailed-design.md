@@ -24,6 +24,7 @@
 | P9 输入区布局（v1.4 追加） | ✅ 完成 | `InputBox.vue` 改上下两段（文字区占满整宽 + 底部工具行） | 新增 2 条结构用例（74/74 全过），锁死"不得并排"，见 §5.5 / 坑 30 |
 | P10 会话改名与删除（v1.5 追加） | ✅ 完成 | `Sidebar.vue` 行内操作 + `stores/chat.ts` `renameSession/removeSession` + `api/hermes.ts` PATCH/DELETE | 新增 7 条单测（81/81 全过）；**真实链路核验**：改名落库、重名/超长被拒并翻成中文、删除后 GET 404 且本地状态清空（只动探针会话，用完即删），见 §5.10 |
 | P11 行内状态自动收起（v1.6 追加） | ✅ 完成 | `Sidebar.vue` document 捕获阶段 click + Esc 取消；顺带修掉一个"会腐烂"的测试（`groupSessions` 注入 `nowMs`） | 新增 5 条单测（86/86 全过）：点外面取消/删除确认点外面取消/Esc/点行内保存不误伤/切到另一行编辑；见 §5.2 与坑 34/35 |
+| P12 删除后空壳残留（v1.7 追加） | 🟡 客户端兜底已完成；🟠 **服务端补丁待宿主机应用** | 根因定位到 `hermes_state.py:7506`「确保行存在」的 upsert；客户端 `removeSession()` 加 2s 复查再删 | 新增 2 条单测（88/88 全过）+ **真实链路核验**：状态序列 `1.6s:200 → 2.0s:404`、`state.db` 行数 0；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py`（需 root），见 §5.10 与坑 36 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -629,6 +630,25 @@ npx vitest run src/xxx.verify.spec.ts     # 临时核验脚本：跑完就删，
 
 **不改用原生 `prompt` / `confirm`**：用户明确反感原生弹窗，一律原位编辑 + 原位确认。
 
+#### 删除后的"空壳残留"（服务端缺陷 + 客户端兜底，v1.7）
+
+**现象**：删掉的会话过一会儿又出现在列表里，标题是刚生成的那个，点进去 0 条消息。
+
+**复现**（`/opt/data/.verify/repro_ghost_session.mjs`，稳定复现）：建会话 → 跑一轮 → 立刻删 → 0.5s 内同一 id 冒出一行新记录：
+
+```
+source="unknown"  title_source="llm"  message_count=0  started_at=删除后约 1 秒
+```
+
+**根因**（读码定位）：`hermes_state.py:7506`，`update_token_counts()` 在轮次结束后**异步**写 token 前会先调 `_insert_session_row(session_id, "unknown", ...)`「确保行存在」（注释原话：避免 UPDATE 静默影响 0 行），而那是 upsert —— 会话若已被删，行就被**重建**出来；随后迟到的异步标题写入正好落到这具空壳上。跟标题写入无关（`_set_session_title` 是纯 UPDATE，造不出行），删除本身也是干净的两条 DELETE。
+
+**为什么改不动**：`/opt/hermes` 是 **root:root 755**，agent 以 uid 1000 `hermes` 运行且**没有 sudo** → 写不进去，写保护根也限制在 `/opt/data`。
+
+**两手都要**：
+
+1. **客户端兜底（已实现，不依赖服务端）**：`removeSession()` 删完 2s 后复查一次 `GET /api/sessions/{id}`，还在就再删一次并把本地列表里的空壳清掉；404 则什么都不做，失败静默。实测状态序列 `0.4s:200 … 1.6s:200 → 2.0s:404 → 之后恒 404`，`state.db` 行数 0 —— 连 TUI/仪表盘列表里的同一具空壳也一起清了。
+2. **服务端根治（待宿主机应用）**：补丁脚本 `/opt/data/.verify/apply_ghost_fix.py`（墓碑集合：删除时登记 id、`_insert_session_row` 见到墓碑直接返回、`create_session` 解除墓碑；4 处锚点带唯一性断言，`--check` 可先看 diff，原文件已备份到 `/opt/data/backups/hermes_patches/`）。应用后需重启 gateway：`/command/s6-svc -t /run/service/gateway-default`（api server 就跑在 `hermes gateway run --replace` 这个进程里）。
+
 
 
 ---
@@ -821,3 +841,4 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 33. **★ 列表行不能用 `<button>` 包住行内按钮** → 会得到非法 HTML + 事件串味（点重命名等于点了打开会话）。行要是 `<div class="group flex">`，标题与操作按钮做兄弟节点。另外 **v-for 里的 template ref 会变成数组**，要聚焦编辑框用 `data-*` 属性 + `querySelector`。
 34. **★ "点外面自动收起"不要用 `blur` 实现** → 点"保存/取消"按钮时 `blur` 先于 `click` 触发，编辑态被关掉后按钮的 click 就落空了（保存静默失效）。正确做法：**document 捕获阶段的 `click`** + 判断目标是"行内还是行外"（行上带 `data-row-id`）；捕获阶段先于目标自身处理执行，所以行内点击不会误取消、行外点击会先取消再执行原逻辑（例如顺手切到别的会话）。监听器要随状态挂/卸并在卸载时移除。
 35. **★ 测试里不要用"写死的日期 + 内部 `Date.now()`"** → `groupSessions()` 原先内部取 `Date.now()`，而 fixture 写死 2026-09-11 → **跨过午夜后用例必挂**（实测 9-12 早上跑时"今天"全变"昨天"，报错还很难看出是时间问题）。修法：函数把 `nowMs` 做成可注入参数、测试显式传入固定 NOW。**凡是"相对当前时间"的逻辑，都要留一个可注入的时间入口**，否则测试会随时间腐烂。
+36. **★★ 删掉的会话会"复活"（服务端缺陷）** → 症状：删完 0.5s 后同一 id 冒出一行空壳（`source="unknown"`、0 条消息、标题是刚生成的），列表刷新后像"没删掉"。根因：`hermes_state.py:7506` `update_token_counts()` 异步写 token 前会 upsert「确保行存在」，而会话可能刚被删；**跟标题写入无关**（那是纯 UPDATE），删除本身也干净。客户端兜底：删完 2s 复查一次、还在就再删一次（已实现，实测 2.0s 处变 404、DB 行数 0）；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py` 待宿主机以 root 应用。**排查手法可复用**：先写复现脚本 + 直查 state.db 原始行 + 按时刻捞日志，再回头读码，比盯着代码猜快得多。

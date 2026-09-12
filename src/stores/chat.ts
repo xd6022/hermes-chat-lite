@@ -356,8 +356,16 @@ export async function renameSession(id: string, title: string): Promise<string |
  *
  * 纪律（2026-09-11 真事故的教训）：只允许"用户点中某一行 → 二次确认 → 删这一行"。
  * 绝不提供按 source/条件批量删的入口 —— 服务端也**没有**批量端点，别在前端自己拼。
+ *
+ * **空壳复查**：服务端已知缺陷 —— 删除后约 0.5s，迟到的异步写入（token 计数 /
+ * 标题生成）会调 `_insert_session_row()` 把会话行重新 upsert 出来
+ *（`source='unknown'`、0 条消息），于是列表刷新后"删掉的会话又回来了"。
+ * 复现与根因：`/opt/data/.verify/repro_ghost_session.mjs`；服务端补丁：
+ * `/opt/data/.verify/apply_ghost_fix.py`（需 root，未应用时靠这里兜底）。
+ * 这里在 `ghostSweepDelayMs` 之后复查一次，真冒出来就再删一次 —— 顺手把
+ * TUI / 仪表盘列表里的同一具空壳也清掉。
  */
-export async function removeSession(id: string): Promise<string | null> {
+export async function removeSession(id: string, ghostSweepDelayMs = 2000): Promise<string | null> {
   try {
     await deleteSessionApi(id)
     store.sessions = store.sessions.filter((s) => s.id !== id)
@@ -371,9 +379,22 @@ export async function removeSession(id: string): Promise<string | null> {
       store.run.phase = 'idle'
       store.run.timeline = []
     }
+    void sweepGhost(id, ghostSweepDelayMs)
     return null
   } catch (e) {
     return msgOf(e)
+  }
+}
+
+/** 复查"被复活"的空壳并清掉；失败一律静默（这不是用户请求的操作，不该打扰用户）。 */
+async function sweepGhost(id: string, delayMs: number): Promise<void> {
+  try {
+    if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+    await getSession(id) // 还能读到 → 说明被异步写入复活了
+    await deleteSessionApi(id)
+    store.sessions = store.sessions.filter((s) => s.id !== id)
+  } catch {
+    // getSession 抛 HermesApiError(404) = 干净，什么都不用做
   }
 }
 

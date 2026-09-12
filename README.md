@@ -44,7 +44,7 @@ curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:5173/api/sessions?lim
 ## 测试 / 类型检查 / 构建
 
 ```bash
-node node_modules/vitest/vitest.mjs run          # 86 个用例：SSE 半帧切片、中文多字节切分、过滤规则、输入法、输入框布局、侧栏搜改删、集成、搜索/折叠/主题、历史分页与消息合并
+node node_modules/vitest/vitest.mjs run          # 88 个用例：SSE 半帧切片、中文多字节切分、过滤规则、输入法、输入框布局、侧栏搜改删、删除后空壳复查、集成、搜索/折叠/主题、历史分页与消息合并
 npm run typecheck                                # vue-tsc --noEmit
 npm run build                                    # 产物约 282KB（gzip 110KB）+ CSS 26KB
 ```
@@ -95,6 +95,7 @@ chat.<域名> {
 
 | 现象 | 病因 |
 | --- | --- |
+| 删掉的会话过一会儿又回来了（标题是刚生成的、0 条消息） | 服务端缺陷：删除后迟到的异步写入（token 计数）会 upsert 把会话行重建。客户端已加 2s 复查再删兜底；根治需在宿主机应用 `/opt/data/.verify/apply_ghost_fix.py`（需 root）+ 重启 gateway-default。见 docs §5.10 与坑 36 |
 | 接口 **403**、body 空，但 key 是对的 | Hermes 的 CORS 中间件拒绝了**带 `Origin` 头**的请求。nginx 的 API location 必须有 `proxy_set_header Origin "";`。浏览器必带 `Origin`、curl 不带 → 命令行测不出来，只在真机炸 |
 | 接口 **401** | 反代没注入 `Authorization`，或 key 值不对（自检：`awk -F= '{print length($2)}' .env` 应为 64） |
 | 流式变一次性返回 | 缺 `proxy_buffering off` |

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { HermesMessage } from '../api/types'
+import type { HermesMessage, HermesSession } from '../api/types'
 import type * as ChatModule from './chat'
 
 /**
@@ -391,5 +391,69 @@ describe('每轮统计（耗时 / 输入 / 输出 / 缓存命中率）', () => {
     expect(st!.outputTokens).toBe(7)
     expect(st!.cacheRate).toBeNull()
     expect(mod.store.run.phase).toBe('done')
+  })
+})
+
+describe('删除会话：空壳复查（对服务端已知缺陷的兜底）', () => {
+  /** 服务端行为可控：DELETE 恒成功；GET 按 opts.ghost 返回"复活的行"或 404 */
+  function stubOps(opts: { ghost: boolean }) {
+    let deletes = 0
+    let gets = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        calls.push(`${method} ${url}`)
+        if (method === 'DELETE') {
+          deletes++
+          return jsonResponse({ object: 'hermes.session.deleted', id: 's1', deleted: true })
+        }
+        if (method === 'GET' && url === '/api/sessions/s1') {
+          gets++
+          if (opts.ghost) {
+            // 实测形态：source='unknown'、message_count=0、标题是刚生成的
+            return jsonResponse({
+              object: 'hermes.session',
+              session: { id: 's1', source: 'unknown', title: '幽灵会话', started_at: 1, last_active: 1 },
+            })
+          }
+          return new Response(
+            JSON.stringify({ error: { message: 'Session not found: s1', code: 'session_not_found' } }),
+            { status: 404, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        throw new Error(`未预期的请求: ${method} ${url}`)
+      }),
+    )
+    return { dels: () => deletes, gets: () => gets }
+  }
+
+  const row = (id: string, title: string): HermesSession =>
+    ({ id, source: 'api_server', title, started_at: 1, last_active: 1 }) as HermesSession
+
+  it('会话被异步写入"复活"→ 复查后自动再删一次（顺手把列表里的空壳清掉）', async () => {
+    const mod = await freshModule()
+    const st = stubOps({ ghost: true })
+    mod.store.sessions = [row('s1', '要删的会话'), row('s2', '别的会话')]
+
+    const err = await mod.removeSession('s1', 0) // 延迟设 0：测试不等真实 2 秒
+    expect(err).toBeNull()
+    expect(mod.store.sessions.map((s) => s.id)).toEqual(['s2']) // 本地立刻移除
+
+    await vi.waitFor(() => expect(st.dels()).toBe(2)) // 复查发现空壳 → 又删了一次
+    expect(st.gets()).toBe(1)
+    expect(mod.store.sessions.some((s) => s.id === 's1')).toBe(false)
+  })
+
+  it('会话真的没了（404）→ 复查只读一次，不多发删除', async () => {
+    const mod = await freshModule()
+    const st = stubOps({ ghost: false })
+    mod.store.sessions = [row('s1', '要删的会话')]
+
+    await mod.removeSession('s1', 0)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(st.gets()).toBe(1)
+    expect(st.dels()).toBe(1)
   })
 })

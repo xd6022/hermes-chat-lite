@@ -26,6 +26,7 @@
 | P11 行内状态自动收起（v1.6 追加） | ✅ 完成 | `Sidebar.vue` document 捕获阶段 click + Esc 取消；顺带修掉一个"会腐烂"的测试（`groupSessions` 注入 `nowMs`） | 新增 5 条单测（86/86 全过）：点外面取消/删除确认点外面取消/Esc/点行内保存不误伤/切到另一行编辑；见 §5.2 与坑 34/35 |
 | P12 删除后空壳残留（v1.7 追加） | 🟡 客户端兜底已完成；🟠 **服务端补丁待宿主机应用** | 根因定位到 `hermes_state.py:7506`「确保行存在」的 upsert；客户端 `removeSession()` 加 2s 复查再删 | 新增 2 条单测（88/88 全过）+ **真实链路核验**：状态序列 `1.6s:200 → 2.0s:404`、`state.db` 行数 0；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py`（需 root），见 §5.10 与坑 36 |
 | P13 安全闸门拦截提示（v1.8 追加） | ✅ 完成 | `lib/security.ts` 判据（照抄服务端文案）+ store 从 `run.completed.messages` 捞原文 + `RunStatus.vue` 琥珀色说明卡 | 新增 10 条单测（98/98 全过，含 7 条判据用例与"不误报/换轮清空"）；**真实链路核验**：transcript 确实带 `role=tool` 原文（简单一轮 2.0 KB）且正常轮不误报，见 §5.10 与坑 37 |
+| P14 发送链路迁到 `/v1/runs`（v2.0，A 方案） | ✅ 完成 | 新增 `api/runs.ts`（提交/订流/查终态/中断/审批回话/引导）+ `api/sse.ts` 抽出 `consumeSse`/`getSse` + store 双通道开关 + `RunStatus.vue` 审批卡片 + 轮末回读对账 | 新增 24 条用例（**122/122 全过**）+ **常驻真实链路 e2e**（`npm run e2e`，5 项全绿）。真链路抓到 2 个真 bug（事件名不在 `event:` 行里 → 全事件被忽略；`run.cancelled` 被判成"完成"）与 1 个字段坑（`tool` ≠ `tool_name`）；审批**真实事件在本环境触发不了**（被 smart approval 自动放行），卡片行为由 8 条组件用例锁住，见 §5.11 与坑 38/39/40 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -662,6 +663,49 @@ source="unknown"  title_source="llm"  message_count=0  started_at=删除后约 1
 
 ---
 
+### 5.11 发送链路迁到 `/v1/runs`（v2.0 追加，A 方案）
+
+**为什么换**：旧通道 `POST /api/sessions/{id}/chat/stream` 上 Hermes **没有接审批线**
+（`register_gateway_notify` / `_run_approval_sessions` / `approval.request` 事件全在
+`_handle_runs`（即 `POST /v1/runs`）里，`_create_agent` 零接线）→ 网页端撞上审批只能
+fail-closed 直接拒。换到 `/v1/runs` 后网页端**第一次能批准/拒绝危险操作**，并顺带拿到
+"中断正在跑的一轮"（`POST .../stop`）与"引导"（`.../steer`）。
+**Hermes 源码一行未改**（`/v1/runs` 是它自带能力，我们之前只是没用它）。
+
+**两条通道的差异**（全部差异都在 `stores/chat.ts` 的 `applyEvent()` 与 `api/runs.ts` 里抹平）：
+
+| 维度 | 旧 `chat/stream` | 新 `/v1/runs` |
+|---|---|---|
+| 提交与订阅 | 一个 POST 内同时完成 | `POST /v1/runs`(202) 先拿 `run_id` → `GET /v1/runs/{id}/events` |
+| 流式打字 | `assistant.delta` | `message.delta` |
+| 思考提示 | 伪工具 `tool.progress{tool_name:'_thinking'}` | 独立事件 `reasoning.available` |
+| 工具事件字段 | `tool_name` | **`tool`**（`tool.completed` 另带 `duration`/`error`） |
+| SSE 帧 | 有 `event:` 行 | **没有 `event:` 行**，事件名在 JSON 的 `event` 字段里 |
+| 终稿 | `assistant.completed.content` | `run.completed.output` |
+| 权威 transcript | `run.completed.messages` | **没有该字段** → 轮末回读会话对账 |
+| 失败原因 | `error` 事件 | `run.failed{error}` / `GET /v1/runs/{id}` 的 `status` |
+| 中断 | 断开连接 | `POST /v1/runs/{id}/stop` → `run.cancelled` |
+| 审批 | 无（fail-closed） | `approval.request` → `POST /v1/runs/{id}/approval` |
+| 事件流可重连 | 否 | 否（消费后队列即被丢弃，重连 404） |
+
+**回退开关**：`setSendTransport('stream')`（默认 `DEFAULT_TRANSPORT = 'runs'`）。
+两条通道共用同一套事件归约器与收尾逻辑，切回去行为与 v1.8 一致（有单测锁）。
+
+**审批卡片**（`RunStatus.vue`）：显示工具名 + 被标红的命令原文 + 选项
+（批准一次 / 本会话都允许 / 永久允许 / 拒绝 —— 按服务端 `choices` 与 `allow_permanent`
+决定显示哪些），回话后显示"已回话：…"，失败（如 409 已过期）在卡片内红字提示且可重试。
+等待期间状态条是"等待你批准：<工具>"、计时继续走 —— 这一轮**卡住不会自己往下跑**。
+
+**轮末回读对账**（`reconcileTurn()`）：轮次结束后补一次 `GET /api/sessions/{id}/messages`，
+用服务端落库的数据校正 ① 正文（合并本轮所有 assistant 段，顺带抹掉 delta 的前导换行杂质）
+② 安全闸门原文 ③ 工具时间线补齐。若事件流中途断了（且 `GET /v1/runs/{id}` 显示还在跑），
+界面标注"事件流中断，本轮内容已从会话记录回读补齐"。
+
+**安全边界**：会话上的审批授权按 `run_id` 隔离（服务端行为），所以"本会话都允许"只影响
+这一个 run；前端不做任何授权缓存，每次审批都真问服务端。
+
+**遗留**：`POST .../steer`（往正在跑的一轮里插话）接口已封装（`api/runs.ts`），界面入口没做。
+
 ## 6. UI 规范
 
 | 项 | 值 |
@@ -803,6 +847,18 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 
 ---
 
+### 10.2 验证证据（2026-09-12，A 方案 / v2.0）
+
+| 项 | 命令 / 脚本 | 结论 |
+|---|---|---|
+| 单元 + 组件 | `npm test` | **122/122 通过**（新增 `stores/runs-transport.spec.ts` 16 条、`components/RunStatus.spec.ts` 8 条） |
+| 类型 | `npx vue-tsc --noEmit -p tsconfig.json` | 0 错误 |
+| 真实链路（**常驻**） | `set -a && . /opt/data/.env && set +a && npm run e2e` | **5 项全绿**：① 普通轮（`recovered=false`、统计 27,449 in / 缓存 96.99%）② 工具轮（时间线带工具名 `terminal`）③ 中断（服务端 `status=cancelled`、界面 `aborted`）④ 历史回归（7 条原始 → 5 条界面消息）⑤ 清理（删除后 GET 404）。全程只动自建探针会话，用完全部删净 |
+| 审批接口契约 | `/opt/data/.verify/probe_approval_contract.mjs` | 非法/缺 `choice` → 400 `invalid_approval_choice`；未知 run（approval/get/stop）→ 404 `run_not_found`；无待审批提交 → 409 `approval_not_pending` |
+| 审批真实事件 | `/opt/data/.verify/probe_approval_live.mjs` | **未能触发**：让 agent 执行 `rm -rf /tmp/<不存在的路径>` 也被 **smart approval 自动放行**；日志（含轮转文件）历史上 **0 次** `approval.request`。→ 卡片行为由 8 条组件用例锁住，真机验收项见 README 第 7 条 |
+| 通道可替代性（前置实测） | `/opt/data/.verify/probe_runs.mjs` | `/v1/runs` 有逐字流式、同一 `session_id` 连续两轮历史连续、`GET /api/sessions/{id}/messages` 能读到 run 写的消息（含 `role=tool`）、事件流消费后再连 → 404 |
+| 帧形态取证 | `/opt/data/.verify/probe_runs_tail.mjs` | 原样打印流尾：`data: {...}\n\n` + `: stream closed\n\n`，**没有 `event:` 行** → 坑 38 的直接证据 |
+
 ## 11. 明确不做（v1 冻结，防范围蔓延）
 
 用户登录 / 权限 / 多用户 / 数据库 / 文件上传 / 图片生成 / 插件市场 / 模型切换 / Prompt 管理 / Agent 配置页 / 会话删除与收藏 / 消息重新生成 / 多标签并发流。
@@ -852,3 +908,8 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 35. **★ 测试里不要用"写死的日期 + 内部 `Date.now()`"** → `groupSessions()` 原先内部取 `Date.now()`，而 fixture 写死 2026-09-11 → **跨过午夜后用例必挂**（实测 9-12 早上跑时"今天"全变"昨天"，报错还很难看出是时间问题）。修法：函数把 `nowMs` 做成可注入参数、测试显式传入固定 NOW。**凡是"相对当前时间"的逻辑，都要留一个可注入的时间入口**，否则测试会随时间腐烂。
 36. **★★ 删掉的会话会"复活"（服务端缺陷）** → 症状：删完 0.5s 后同一 id 冒出一行空壳（`source="unknown"`、0 条消息、标题是刚生成的），列表刷新后像"没删掉"。根因：`hermes_state.py:7506` `update_token_counts()` 异步写 token 前会 upsert「确保行存在」，而会话可能刚被删；**跟标题写入无关**（那是纯 UPDATE），删除本身也干净。客户端兜底：删完 2s 复查一次、还在就再删一次（已实现，实测 2.0s 处变 404、DB 行数 0）；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py` 待宿主机以 root 应用。**排查手法可复用**：先写复现脚本 + 直查 state.db 原始行 + 按时刻捞日志，再回头读码，比盯着代码猜快得多。
 37. **★ 工具失败的原因不在事件里，在 `run.completed.messages` 里** → `tool.failed` 只带 `tool_name`/`preview`/`args`，**不带结果与错误**（实测），所以"为什么失败"（例如被安全闸门拦下）只能从整轮 transcript 里捞 `role=tool` 的原文。另外**审批只在 `/v1/runs` 上**（`chat/stream` 无接线），网页端需要人工批准的操作会被 fail-closed 直接拒 —— 别把它当成静默卡死去排查。
+38. **★★ `/v1/runs` 的 SSE 帧没有 `event:` 行** → 事件名在 JSON 载荷的 `event` 字段里（服务端 `_sse_frame(event)` 没传 `event=` 参数）；旧通道 `chat/stream` 是有的（`_sse_frame(payload, event=name)`）。照旧通道的写法解析，事件名会一律变成默认的 `message`，**所有事件被当未知事件忽略** —— 症状是"没有任何逐字输出与工具时间线，只有轮末对账补回来的一段正文"，看起来像"流式坏了"而不是"解析错了"。修法：在 `api/runs.ts` 的 `runEvents()` 里归一化（`name === 'message' && typeof data.event === 'string' ? data.event : name`）。**这条只能靠真链路发现**：单测若照旧通道的帧形态写 fixture，会一直绿。
+39. **★ `/v1/runs` 的工具事件字段叫 `tool`，不是 `tool_name`** → `tool.started{tool, preview}`、`tool.completed{tool, duration, error}`（实证 `api_server.py:6604-6622` 的 `_callback`）。不归一化则时间线里工具名全空 —— 注意 **JSON 序列化会丢掉 `undefined` 字段**，所以症状是 `{"preview":"echo hi","status":"ok"}` 这种"缺 name"的形态，容易看漏。另外新通道**没有 `tool.failed` 事件**，失败要靠 `tool.completed.error === true` 判断。
+40. **★ 收到 `run.cancelled` 不能判成"完成"** → 它是"终止事件"但不是"完成事件"。把 `sawTerminal` 直接当完成判据，会让用户主动中断的那一轮显示成"完成"。要另立 `cancelled` 标记，并且中断不产出"本轮统计"。真链路 e2e 抓到的第二个真 bug。
+41. **★ 真链路 e2e 要单独放、别塞进 `npm test`** → 它打真 API + 真模型，一轮几十秒又烧 token（实测一次"自作主张"的复盘跑了 204 秒 / 45 万输入 token）。做法：用例放 `e2e/`（根配置的 `include` 是 `src/**/*.spec.ts`，天然不收录），另给 `e2e/vitest.config.ts` + `npm run e2e`。**该配置文件里的 `root` 必须写绝对路径**（实测相对路径 `'..'` 是按 CWD 解析的，会指到项目外）。另外 jsdom 的 `AbortSignal` 不是 Node 的实例，透传给真 `fetch` 会报 `Expected signal to be an instance of AbortSignal` → 真链路用例里要么不传 signal，要么换 `environment: 'node'`。
+42. **★ 探针会话要钉模型，别用网关默认** → 网关默认是 `qwen3.8-flash`，实测它会把"只回复两个字"执行成一整套 510210 复盘；探针里先 `POST /api/sessions/{id}/model {provider, model}` 钉个便宜听话的模型（如 `xyy/deepseek-flash`），既省钱又让断言稳定。断言的写法也要**只赌结构、不赌措辞**（如"正文非空 + 有 `run_id` + 有统计"），否则模型随口一改文案用例就红。

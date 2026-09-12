@@ -92,7 +92,11 @@ let calls: string[] = []
 
 async function freshModule(): Promise<typeof ChatModule> {
   vi.resetModules()
-  return (await import('./chat')) as typeof ChatModule
+  const mod = (await import('./chat')) as typeof ChatModule
+  // 本文件测的是【旧通道】chat/stream 的行为，所以显式切回去。
+  // 新通道（/v1/runs，带审批）的行为见 runs-transport.spec.ts。
+  mod.setSendTransport('stream')
+  return mod
 }
 
 beforeEach(() => {

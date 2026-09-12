@@ -15,7 +15,7 @@
  *  ① 只有单个删除，没有任何批量/按条件删除的入口；
  *  ② 正在跑的那一轮所属会话禁止改名/删除（服务端 turn 还在写它）。
  */
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { newChat, openSession, removeSession, renameSession, store, TITLE_MAX } from '../stores/chat'
 import { displayTitle, formatClock, groupSessions } from '../lib/format'
 import type { HermesSession } from '../api/types'
@@ -103,6 +103,52 @@ function cancelDelete(): void {
   confirmingId.value = null
   deleteError.value = ''
 }
+
+/* ---------------- 点外面 / Esc 自动收起（v1.6） ----------------
+ * 用户反馈：进了改名或删除确认后，必须手点 ✕/取消 才能退出，点了右侧对话区也没反应。
+ *
+ * 实现用的是 **document 捕获阶段的 click**，不是 input 的 blur —— blur 会跟
+ * "点保存/取消按钮"打架（blur 先触发 → 把编辑态关掉 → 按钮的 click 反而落空）。
+ * 捕获阶段先于目标元素自身的处理执行，所以顺序天然是对的：
+ *   点在行内 → 不取消（交给按钮自己的逻辑）
+ *   点在行外 → 取消，然后那个地方的正常逻辑照常执行（例如切到别的会话）
+ */
+
+/** 当前处于行内状态的会话（编辑与删除确认互斥，同时只会有一个） */
+const activeRowId = computed(() => editingId.value ?? confirmingId.value)
+
+function cancelActiveRow(): void {
+  if (editingId.value) cancelRename()
+  if (confirmingId.value) cancelDelete()
+}
+
+function onDocClick(e: MouseEvent): void {
+  const id = activeRowId.value
+  if (!id) return
+  const t = e.target as HTMLElement | null
+  // 点在"正在编辑/确认的那一行"内部（输入框、✓、✕、删除、取消）不算点外面
+  if (t?.closest?.(`[data-row-id="${id}"]`)) return
+  cancelActiveRow()
+}
+
+function onDocKey(e: KeyboardEvent): void {
+  if (e.key === 'Escape') cancelActiveRow()
+}
+
+watch(activeRowId, (id, prev) => {
+  if (id && !prev) {
+    document.addEventListener('click', onDocClick, true)
+    document.addEventListener('keydown', onDocKey)
+  } else if (!id && prev) {
+    document.removeEventListener('click', onDocClick, true)
+    document.removeEventListener('keydown', onDocKey)
+  }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick, true)
+  document.removeEventListener('keydown', onDocKey)
+})
 
 async function doDelete(id: string): Promise<void> {
   if (busyId.value) return
@@ -202,6 +248,7 @@ async function doDelete(id: string): Promise<void> {
           <div
             v-for="s in g.items"
             :key="s.id"
+            :data-row-id="s.id"
             class="group flex items-center gap-1 rounded-lg"
             :class="s.id === store.currentId ? 'bg-gray-200/80 dark:bg-gray-700/70' : ''"
           >

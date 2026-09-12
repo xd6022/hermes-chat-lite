@@ -257,3 +257,90 @@ describe('侧栏行内操作：删除', () => {
     expect(w.findAll('button[aria-label="删除"]')[1].attributes('disabled')).toBeUndefined()
   })
 })
+
+describe('行内状态：点外面 / Esc 自动收起', () => {
+  let calls: { method: string; url: string }[] = []
+
+  /** 模拟"点了组件外面"（右侧对话区、页面空白处……） */
+  function clickOutside(): void {
+    document.body.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  }
+
+  function pressEsc(): void {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  }
+
+  beforeEach(() => {
+    calls = []
+    store.streaming = false
+    store.currentId = null
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ method: init?.method ?? 'GET', url: String(input) })
+        return jsonResponse({
+          object: 'hermes.session',
+          session: { id: 's1', source: 'tui', title: '新标题', started_at: 1, last_active: 1 },
+        })
+      }),
+    )
+  })
+
+  it('改名进行中点外面 → 自动收起，不发请求', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="重命名"]')[0].trigger('click')
+    expect(w.find('[data-edit-id="s1"]').exists()).toBe(true)
+
+    clickOutside()
+    await vi.waitFor(() => expect(w.find('[data-edit-id="s1"]').exists()).toBe(false))
+    expect(calls.length).toBe(0)
+    expect(w.find('nav').text()).toContain('股票分析') // 原标题没变
+  })
+
+  it('删除二次确认中点外面 → 自动收起，不发请求', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="删除"]')[0].trigger('click')
+    expect(w.text()).toContain('删除「股票分析」？')
+
+    clickOutside()
+    await vi.waitFor(() => expect(w.text()).not.toContain('删除「股票分析」？'))
+    expect(calls.length).toBe(0)
+    expect(store.sessions.length).toBe(3) // 没删
+  })
+
+  it('删除确认中按 Esc → 也收起', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="删除"]')[0].trigger('click')
+    pressEsc()
+    await vi.waitFor(() => expect(w.text()).not.toContain('删除「股票分析」？'))
+    expect(calls.length).toBe(0)
+  })
+
+  it('点行内的 ✓ 保存不算"点外面"（否则保存会被自己吃掉）', async () => {
+    const w = mountSidebar()
+    await w.findAll('button[aria-label="重命名"]')[0].trigger('click')
+    await w.find('[data-edit-id="s1"]').setValue('新标题')
+    await w.find('button[aria-label="保存标题"]').trigger('click')
+
+    await vi.waitFor(() => expect(calls.some((c) => c.method === 'PATCH')).toBe(true))
+    // PATCH 发出 ≠ DOM 已更新（Vue 下一次 tick 才重渲染），所以断言要放进 waitFor
+    await vi.waitFor(() => {
+      expect(w.find('nav').text()).toContain('新标题')
+      expect(w.find('[data-edit-id="s1"]').exists()).toBe(false)
+    })
+  })
+
+  it('直接点另一行的铅笔 → 收起上一行并就地编辑这一行', async () => {
+    const w = mountSidebar()
+    await w.find('[data-row-id="s1"] button[aria-label="重命名"]').trigger('click')
+    expect(w.find('[data-edit-id="s1"]').exists()).toBe(true)
+
+    // 注意：进入编辑态后 s1 的铅笔按钮就没了，所以必须按行查，不能用 [1] 索引
+    await w.find('[data-row-id="s2"] button[aria-label="重命名"]').trigger('click')
+    await vi.waitFor(() => {
+      expect(w.find('[data-edit-id="s1"]').exists()).toBe(false)
+      expect(w.find('[data-edit-id="s2"]').exists()).toBe(true)
+    })
+    expect(calls.length).toBe(0)
+  })
+})

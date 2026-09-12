@@ -43,7 +43,9 @@ describe('会话分组', () => {
       sess('c', new Date(2026, 8, 10, 12, 0).getTime()),
       sess('d', new Date(2026, 7, 1, 12, 0).getTime()),
     ]
-    const groups = groupSessions(list)
+    // 必须注入 NOW：不注入会用真实 Date.now()，这些写死的日期过一天就"变质"
+    //（实测 9-12 凌晨跑时 '今天' 全部变成 '昨天'，用例无辜挂掉）
+    const groups = groupSessions(list, NOW)
     expect(groups.map((g) => g.label)).toEqual(['今天', '昨天', '更早'])
     expect(groups[0].items.map((s) => s.id)).toEqual(['a', 'b'])
     expect(groups[1].items.map((s) => s.id)).toEqual(['c'])

@@ -40,12 +40,17 @@ export interface SessionGroup {
 
 const BUCKET_ORDER: DayBucket[] = ['today', 'yesterday', 'earlier']
 
-/** 输入已是按 last_active 倒序的列表，输出保持顺序 */
-export function groupSessions(sessions: HermesSession[]): SessionGroup[] {
+/**
+ * 输入已是按 last_active 倒序的列表，输出保持顺序。
+ *
+ * `nowMs` 可注入：不注入就用当前时间。**测试必须注入** —— 否则 fixture 里写死的
+ * 日期会随着日子推进"变质"（实测：写死 9-11 的用例在 9-12 凌晨跑就挂了）。
+ */
+export function groupSessions(sessions: HermesSession[], nowMs = Date.now()): SessionGroup[] {
   const buckets: Record<DayBucket, HermesSession[]> = { today: [], yesterday: [], earlier: [] }
   for (const s of sessions) {
     const ts = s.last_active || s.started_at || 0
-    buckets[dayBucket(ts)].push(s)
+    buckets[dayBucket(ts, nowMs)].push(s)
   }
   return BUCKET_ORDER.filter((b) => buckets[b].length > 0).map((b) => ({
     bucket: b,

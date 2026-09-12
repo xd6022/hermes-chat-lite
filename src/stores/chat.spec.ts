@@ -457,3 +457,68 @@ describe('删除会话：空壳复查（对服务端已知缺陷的兜底）', (
     expect(st.dels()).toBe(1)
   })
 })
+
+describe('安全闸门拦截的说明（从 run.completed.messages 里捞）', () => {
+  /** 造一条最小 SSE 流；tool 结果里放不放 BLOCKED 由参数决定 */
+  function streamWith(toolResult: string): Response {
+    const messages = [{ role: 'tool', tool_name: 'terminal', content: toolResult }]
+    const frames = [
+      ['run.started', { session_id: 's1', run_id: 'r1', seq: 1 }],
+      ['tool.failed', { tool_name: 'terminal', seq: 2 }],
+      ['assistant.completed', { content: '这条我没跑成', seq: 3 }],
+      ['run.completed', { usage: { input_tokens: 10, output_tokens: 2 }, messages, seq: 4 }],
+      ['done', {}],
+    ]
+    const body = frames.map(([e, d]) => `event: ${e}\ndata: ${JSON.stringify(d)}\n\n`).join('')
+    return new Response(body, { status: 200 })
+  }
+
+  it('工具结果里出现 BLOCKED（审批类）→ 记下种类与说明，供界面显示', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        calls.push(`POST ${url}`)
+        if (url.endsWith('/chat/stream')) {
+          return streamWith(
+            'BLOCKED: approval required (destructive rm -rf) but no approver is available in this context',
+          )
+        }
+        throw new Error(`未预期的请求: ${url}`)
+      }),
+    )
+    const mod = await freshModule()
+    mod.store.currentId = 's1'
+    await mod.send('把没用的都删了')
+
+    expect(mod.store.run.blocked?.kind).toBe('approval')
+    expect(mod.store.run.blocked?.hint).toContain('没有审批通道')
+  })
+
+  it('普通工具结果 → 不误报；且下一轮开始时会清掉上一轮的说明', async () => {
+    const mod = await freshModule()
+    let first = true
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        calls.push(`POST ${url}`)
+        if (url.endsWith('/chat/stream')) {
+          if (first) {
+            first = false
+            return streamWith('BLOCKED (hardline): refusing to run this.')
+          }
+          return streamWith('{"bytes_written":784}')
+        }
+        throw new Error(`未预期的请求: ${url}`)
+      }),
+    )
+
+    mod.store.currentId = 's1'
+    await mod.send('第一轮')
+    expect(mod.store.run.blocked?.kind).toBe('rule')
+
+    await mod.send('第二轮') // resetRun() 应清掉上一轮的说明
+    expect(mod.store.run.blocked).toBeNull()
+  })
+})

@@ -90,6 +90,18 @@ const tone = computed(() => {
       </button>
     </div>
 
+    <!-- 安全闸门拦截说明：网页端没有审批通道，工具被拒时得说清"为什么"（否则只看到一个 ✗） -->
+    <div
+      v-if="store.run.blocked"
+      class="mt-1 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"
+    >
+      <p class="font-medium">⛔ 这次工具调用被安全闸门拦下了</p>
+      <p class="mt-0.5 leading-5">{{ store.run.blocked.hint }}</p>
+      <p class="mt-0.5 truncate font-mono text-[11px] opacity-70" :title="store.run.blocked.snippet">
+        {{ store.run.blocked.snippet }}
+      </p>
+    </div>
+
     <!-- 工具时间线：本轮到底干了什么（Open WebUI 缺的就是这块） -->
     <ol
       v-if="showTimeline && toolCount > 0"

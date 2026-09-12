@@ -19,6 +19,7 @@ import {
   streamChat,
 } from '../api/hermes'
 import { isCompactionNote } from '../lib/messages'
+import { securityBlock, type SecurityBlock } from '../lib/security'
 import type {
   HermesMessage,
   HermesSession,
@@ -112,6 +113,8 @@ export const store = reactive({
     toolPreview: null as string | null,
     timeline: [] as ToolStep[],
     errorMessage: null as string | null,
+    /** 本轮被安全闸门拦下的说明（从 run.completed.messages 里捞，见 lib/security.ts） */
+    blocked: null as SecurityBlock | null,
   },
 })
 
@@ -402,6 +405,17 @@ export function stop(): void {
   abortCtl?.abort()
 }
 
+/** 从整轮 transcript 里找出第一条"被安全闸门拦下"的工具结果。 */
+function blockFromMessages(messages?: HermesMessage[]): SecurityBlock | null {
+  for (const m of messages ?? []) {
+    const c = m.content
+    const text = typeof c === 'string' ? c : Array.isArray(c) ? JSON.stringify(c) : ''
+    const hit = securityBlock(text)
+    if (hit) return hit
+  }
+  return null
+}
+
 function resetRun(): void {
   store.run.phase = 'thinking'
   store.run.startedAt = performance.now()
@@ -410,6 +424,7 @@ function resetRun(): void {
   store.run.toolPreview = null
   store.run.timeline = []
   store.run.errorMessage = null
+  store.run.blocked = null
 }
 
 function markToolDone(name: string, status: 'ok' | 'fail'): void {
@@ -511,7 +526,11 @@ export async function send(text: string): Promise<void> {
             // 注意：payload.messages 是整轮 transcript（含工具结果），只用于回填时间线，
             // 绝不渲染成聊天消息（会与正文重复）。
             sawRunCompleted = true
-            turnUsage = (data as SseRunCompleted).usage ?? null
+            const p = data as SseRunCompleted
+            turnUsage = p.usage ?? null
+            // 安全闸门拦截：`tool.failed` 不带结果，只有这里的 transcript 有原文
+            //（网页端没有审批通道 → 需要人工批准的操作会被 fail-closed 直接拒）
+            store.run.blocked = blockFromMessages(p.messages)
             break
           }
           case 'error': {

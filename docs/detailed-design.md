@@ -25,6 +25,7 @@
 | P10 会话改名与删除（v1.5 追加） | ✅ 完成 | `Sidebar.vue` 行内操作 + `stores/chat.ts` `renameSession/removeSession` + `api/hermes.ts` PATCH/DELETE | 新增 7 条单测（81/81 全过）；**真实链路核验**：改名落库、重名/超长被拒并翻成中文、删除后 GET 404 且本地状态清空（只动探针会话，用完即删），见 §5.10 |
 | P11 行内状态自动收起（v1.6 追加） | ✅ 完成 | `Sidebar.vue` document 捕获阶段 click + Esc 取消；顺带修掉一个"会腐烂"的测试（`groupSessions` 注入 `nowMs`） | 新增 5 条单测（86/86 全过）：点外面取消/删除确认点外面取消/Esc/点行内保存不误伤/切到另一行编辑；见 §5.2 与坑 34/35 |
 | P12 删除后空壳残留（v1.7 追加） | 🟡 客户端兜底已完成；🟠 **服务端补丁待宿主机应用** | 根因定位到 `hermes_state.py:7506`「确保行存在」的 upsert；客户端 `removeSession()` 加 2s 复查再删 | 新增 2 条单测（88/88 全过）+ **真实链路核验**：状态序列 `1.6s:200 → 2.0s:404`、`state.db` 行数 0；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py`（需 root），见 §5.10 与坑 36 |
+| P13 安全闸门拦截提示（v1.8 追加） | ✅ 完成 | `lib/security.ts` 判据（照抄服务端文案）+ store 从 `run.completed.messages` 捞原文 + `RunStatus.vue` 琥珀色说明卡 | 新增 10 条单测（98/98 全过，含 7 条判据用例与"不误报/换轮清空"）；**真实链路核验**：transcript 确实带 `role=tool` 原文（简单一轮 2.0 KB）且正常轮不误报，见 §5.10 与坑 37 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -649,6 +650,14 @@ source="unknown"  title_source="llm"  message_count=0  started_at=删除后约 1
 1. **客户端兜底（已实现，不依赖服务端）**：`removeSession()` 删完 2s 后复查一次 `GET /api/sessions/{id}`，还在就再删一次并把本地列表里的空壳清掉；404 则什么都不做，失败静默。实测状态序列 `0.4s:200 … 1.6s:200 → 2.0s:404 → 之后恒 404`，`state.db` 行数 0 —— 连 TUI/仪表盘列表里的同一具空壳也一起清了。
 2. **服务端根治（待宿主机应用）**：补丁脚本 `/opt/data/.verify/apply_ghost_fix.py`（墓碑集合：删除时登记 id、`_insert_session_row` 见到墓碑直接返回、`create_session` 解除墓碑；4 处锚点带唯一性断言，`--check` 可先看 diff，原文件已备份到 `/opt/data/backups/hermes_patches/`）。应用后需重启 gateway：`/command/s6-svc -t /run/service/gateway-default`（api server 就跑在 `hermes gateway run --replace` 这个进程里）。
 
+#### 被安全闸门拦下时说人话（v1.8）
+
+网页端没有审批通道（审批只在 `/v1/runs`），需要人工批准的工具会被 **fail-closed 直接拒**。原来界面只显示一个 ✗，用户看不懂发生了什么。现在：
+
+- **数据来源**：`tool.failed` 事件**只带工具名、不带结果**（实测载荷 `message_id, tool_name, preview, args`），所以原因只能从 `run.completed.messages`（整轮 transcript）里捞 `role=tool` 的原文 —— 真实链路已核验：该字段确实带完整工具输出（简单一轮 2.0 KB），且正常轮次不会误报。
+- **判据**：`lib/security.ts` 的 `securityBlock()`，匹配服务端 `tools/approval.py` 的**真实文案**（`approval required` / `Failed to send approval request` / `without user response` / `User denied this potentially dangerous action` → 审批类；`flagged as dangerous` / `hardline` / `deny rule` → 规则类），并给出对应的人话解释（审批类会告诉你"网页端没有审批通道，要放行去 TUI"）。
+- **展示**：`RunStatus.vue` 在状态条下方出一个琥珀色卡片（标题 + 解释 + 服务端原文片段截断 240 字符），随 `resetRun()` 在下一轮开始时清掉。
+
 
 
 ---
@@ -842,3 +851,4 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 34. **★ "点外面自动收起"不要用 `blur` 实现** → 点"保存/取消"按钮时 `blur` 先于 `click` 触发，编辑态被关掉后按钮的 click 就落空了（保存静默失效）。正确做法：**document 捕获阶段的 `click`** + 判断目标是"行内还是行外"（行上带 `data-row-id`）；捕获阶段先于目标自身处理执行，所以行内点击不会误取消、行外点击会先取消再执行原逻辑（例如顺手切到别的会话）。监听器要随状态挂/卸并在卸载时移除。
 35. **★ 测试里不要用"写死的日期 + 内部 `Date.now()`"** → `groupSessions()` 原先内部取 `Date.now()`，而 fixture 写死 2026-09-11 → **跨过午夜后用例必挂**（实测 9-12 早上跑时"今天"全变"昨天"，报错还很难看出是时间问题）。修法：函数把 `nowMs` 做成可注入参数、测试显式传入固定 NOW。**凡是"相对当前时间"的逻辑，都要留一个可注入的时间入口**，否则测试会随时间腐烂。
 36. **★★ 删掉的会话会"复活"（服务端缺陷）** → 症状：删完 0.5s 后同一 id 冒出一行空壳（`source="unknown"`、0 条消息、标题是刚生成的），列表刷新后像"没删掉"。根因：`hermes_state.py:7506` `update_token_counts()` 异步写 token 前会 upsert「确保行存在」，而会话可能刚被删；**跟标题写入无关**（那是纯 UPDATE），删除本身也干净。客户端兜底：删完 2s 复查一次、还在就再删一次（已实现，实测 2.0s 处变 404、DB 行数 0）；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py` 待宿主机以 root 应用。**排查手法可复用**：先写复现脚本 + 直查 state.db 原始行 + 按时刻捞日志，再回头读码，比盯着代码猜快得多。
+37. **★ 工具失败的原因不在事件里，在 `run.completed.messages` 里** → `tool.failed` 只带 `tool_name`/`preview`/`args`，**不带结果与错误**（实测），所以"为什么失败"（例如被安全闸门拦下）只能从整轮 transcript 里捞 `role=tool` 的原文。另外**审批只在 `/v1/runs` 上**（`chat/stream` 无接线），网页端需要人工批准的操作会被 fail-closed 直接拒 —— 别把它当成静默卡死去排查。

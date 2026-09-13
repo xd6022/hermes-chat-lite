@@ -78,16 +78,16 @@ onBeforeUnmount(() => {
 
 <template>
   <!-- 用户消息：右侧淡灰块，保留换行 -->
-  <div v-if="msg.role === 'user'" class="flex justify-end">
+  <div v-if="msg.role === 'user'" class="flex min-w-0 justify-end">
     <div
-      class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-gray-100 px-4 py-2 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
+      class="min-w-0 max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-gray-100 px-4 py-2 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
     >{{ msg.content }}</div>
   </div>
 
   <!-- 压缩摘要：Hermes 的上下文压缩边界，属于内部机制 —— 折叠起来，别占正文位置 -->
   <div
     v-else-if="msg.compaction"
-    class="rounded-xl border border-gray-200 bg-gray-50/60 dark:border-gray-800 dark:bg-gray-900/40"
+    class="min-w-0 max-w-full rounded-xl border border-gray-200 bg-gray-50/60 dark:border-gray-800 dark:bg-gray-900/40"
   >
     <details>
       <summary
@@ -103,7 +103,7 @@ onBeforeUnmount(() => {
   </div>
 
   <!-- 助手消息：文本流，不用气泡 -->
-  <div v-else class="group">
+  <div v-else class="group min-w-0 max-w-full">
     <div ref="bodyRef" class="md-body" v-html="html" />
     <!-- 每轮统计：耗时 / 输入 / 输出 / 缓存命中率 -->
     <p

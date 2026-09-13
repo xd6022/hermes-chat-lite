@@ -14,19 +14,11 @@
 
 export type SseHandler = (event: string, data: any) => void
 
-export async function postSse(
-  url: string,
-  body: unknown,
-  onEvent: SseHandler,
-  signal?: AbortSignal,
-): Promise<void> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-    body: JSON.stringify(body),
-    signal,
-  })
-
+/**
+ * 解析一个 SSE 响应体（POST / GET 通用）。
+ * 规则见文件头 1~4 条。
+ */
+export async function consumeSse(res: Response, onEvent: SseHandler): Promise<void> {
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`)
   }
@@ -78,4 +70,36 @@ export async function postSse(
       /* 忽略 */
     }
   }
+}
+
+export async function postSse(
+  url: string,
+  body: unknown,
+  onEvent: SseHandler,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  return consumeSse(res, onEvent)
+}
+
+/**
+ * GET + SSE。`/v1/runs/{id}/events` 是 GET 流（EventSource 也能连，但它不能带
+ * 自定义头，而鉴权头由反代注入、浏览器同源请求本来就会带上；仍用 fetch 是为了
+ * 与 POST 流共用一套解析器和 AbortSignal 语义）。
+ *
+ * 注意：这个流**不能重连、不能重放** —— 服务端把队列在消费者断开时就丢弃了，
+ * 再连同一个 run_id 会 404。断线只能靠回读会话消息对账（见 stores/chat.ts）。
+ */
+export async function getSse(
+  url: string,
+  onEvent: SseHandler,
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(url, { headers: { Accept: 'text/event-stream' }, signal })
+  return consumeSse(res, onEvent)
 }

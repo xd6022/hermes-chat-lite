@@ -7,10 +7,11 @@
  *   - 移动端（<768px）：抽屉，默认收起，点按钮展开，选中会话后自动收起
  *   - 桌面端（≥768px）：常驻列，点按钮折叠/展开，选择记在 localStorage
  */
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatWindow from './components/ChatWindow.vue'
-import { checkHealth, loadSessions, store } from './stores/chat'
+import { checkHealth, loadSessions, resumeSync, store } from './stores/chat'
+import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
 
 const drawer = ref(false)
@@ -50,12 +51,26 @@ function toggleSidebar(): void {
   }
 }
 
+/**
+ * 回到前台 / 网络恢复 → 立刻跟服务端对一次账（v2.2）。
+ *
+ * 手机切 App、锁屏、切 Wi-Fi/5G 都会让页面的连接失效，而**后台 JS 里做什么都不可靠**
+ * （定时器被 throttle、连接被系统掐）。所以这里只监听"回来了"这一个事件，把恢复
+ * 动作交给 stores/chat.ts 的 resumeSync（幂等：没在跑的轮次它就是一次空操作）。
+ */
+let unwatchForeground: (() => void) | null = null
+
 onMounted(() => {
   // 恢复折叠态后按钮语义要跟得上（否则 hover 提示会说反）
   sidebarLabel.value = collapsed.value ? '展开会话列表' : '折叠会话列表'
   void checkHealth()
   void loadSessions()
+  unwatchForeground = watchForeground(() => void resumeSync())
+  // 首帧也对一次账：页面可能是被系统回收后重新打开的（此时本轮 run 还在服务端跑）
+  void resumeSync()
 })
+
+onBeforeUnmount(() => unwatchForeground?.())
 </script>
 
 <template>

@@ -161,3 +161,54 @@ export interface SseRunCompleted extends SseBase {
 export interface SseError extends SseBase {
   message: string
 }
+
+/* ---------- /v1/runs（异步 run + 审批，A 方案用；实测见 docs/plans/2026-09-12-runs-transport.md） ---------- */
+
+/** POST /v1/runs → 202 */
+export interface RunSubmitResponse {
+  run_id: string
+  session_id?: string
+  status?: string
+  [k: string]: unknown
+}
+
+/** GET /v1/runs/{run_id}（实测字段：status/session_id/model/last_event/created_at/updated_at） */
+export interface RunStatusResponse {
+  object?: string
+  run_id: string
+  status: string // queued | running | waiting_for_approval | completed | failed | cancelled
+  created_at?: number
+  updated_at?: number
+  session_id?: string
+  model?: string
+  last_event?: string
+  output?: string
+  error?: string
+  usage?: HermesUsage
+  pending_steer?: string | null
+  [k: string]: unknown
+}
+
+/** POST /v1/runs/{id}/approval 的 choice（实测允许值 + 三个别名 approve/approved/allow → once） */
+export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny'
+
+/**
+ * approval.request 事件载荷。
+ * 服务端在 `_run_sync` 里以 `approval_data` 为底、再补 event/run_id/timestamp/choices，
+ * 并以 `_approval_event_choices()` 计算可选项，所以字段集合取决于工具侧，
+ * 这里按"可能出现的字段"声明并允许未知字段（防御式渲染，缺字段不崩）。
+ */
+export interface SseApprovalRequest extends SseBase {
+  /** 审批 id（回话只用 run_id，不要求带它） */
+  approval_id?: string
+  tool_name?: string
+  /** 被 Tirith 标红的命令原文（服务端已脱敏） */
+  command?: string
+  /** 可选项，如 ['once','session','always','deny'] */
+  choices?: string[]
+  /** smart approval（辅助模型）判定为危险 */
+  smart_denied?: boolean
+  /** 是否允许"永久允许"这一项 */
+  allow_permanent?: boolean
+  [k: string]: unknown
+}

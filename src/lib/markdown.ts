@@ -107,6 +107,24 @@ const md: MarkdownIt = new MarkdownIt({
   },
 })
 
+/**
+ * 表格外层包一层可横向滚动的容器（v2.1，移动端超宽表格修复）。
+ *
+ * 为什么必须在渲染层做：markdown 表格的**最小宽度 = 各列 min-content 之和**，
+ * 列一多（10 列的行情表）就必然比手机屏幕宽。表格本身是块级盒子，它溢出时
+ * 会一路把祖先的 scrollWidth 撑大（消息区是 scroll 容器，于是整块消息区能左右拖），
+ * 后面的消息跟着一起横向滚动。给它套一个 `overflow-x: auto` 的 wrapper，
+ * 溢出就被关在 wrapper 里 —— 「超宽内容自己处理自己的宽度」。
+ *
+ * 替代方案（在 MessageItem 里 decorate 后包 DOM）不做：v-html 每次重渲染都要重包一遍，
+ * 流式期间每帧都跑，容易漏；渲染器规则是纯函数、一次性的事。
+ */
+md.renderer.rules.table_open = (tokens, idx, options, _env, self) =>
+  `<div class="table-wrapper thin-scroll">${self.renderToken(tokens, idx, options)}`
+
+md.renderer.rules.table_close = (tokens, idx, options, _env, self) =>
+  `${self.renderToken(tokens, idx, options)}</div>`
+
 export function renderMarkdown(src: string): string {
   return md.render(src)
 }

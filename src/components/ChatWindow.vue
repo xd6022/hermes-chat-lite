@@ -115,7 +115,7 @@ function retry(): void {
     <div
       ref="scroller"
       data-testid="scroller"
-      class="thin-scroll min-h-0 flex-1 overflow-y-auto"
+      class="thin-scroll min-h-0 min-w-0 flex-1 overflow-y-auto"
       @scroll.passive="onScroll"
     >
       <!-- 空态 -->
@@ -153,7 +153,7 @@ function retry(): void {
       </div>
 
       <!-- 消息 -->
-      <div v-else class="mx-auto max-w-chat px-4 py-6">
+      <div v-else class="mx-auto min-w-0 max-w-chat px-4 py-6">
         <!-- 更早的历史：划到顶会自动加载，这个按钮是手动兜底 + 加载中提示 -->
         <!-- （内容不足一屏时不会产生滚动事件，自动加载永远等不到，只能点它） -->
         <div v-if="store.hasMoreHistory" class="mb-4 flex justify-center">
@@ -166,7 +166,7 @@ function retry(): void {
             {{ store.historyLoading ? '加载中…' : '加载更早的消息' }}
           </button>
         </div>
-        <div class="space-y-6">
+        <div class="min-w-0 space-y-6">
           <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
         </div>
       </div>

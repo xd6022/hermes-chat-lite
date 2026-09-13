@@ -85,8 +85,35 @@
     @apply dark:border-gray-700 dark:text-gray-400;
   }
 
+  /* ------------------------------------------------------------
+   * 消息正文容器：不许被内容撑破（v2.1）
+   *  - min-width: 0  —— 作为 flex/grid 子项时，`min-width: auto` 会让它按
+   *    min-content 撑开（长 URL、长 token 的 min-content 可以非常大）
+   *  - overflow-wrap: anywhere —— 长 URL / 长串在任意位置可断（only 在该词
+   *    单独一行也放不下时才断，正常中文/英文排版行为不变）
+   * ------------------------------------------------------------ */
+  .md-body {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  /* 表格：横向滚动只发生在表格自己身上，页面与消息区都不滚（v2.1）
+   *  wrapper 承担 overflow-x，表格用 max-content 保住列宽（不被压扁），
+   *  min-width: 100% 让窄表格仍然铺满容器（与修复前观感一致）。 */
+  .md-body .table-wrapper {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    @apply my-3;
+  }
+
   .md-body table {
-    @apply my-3 w-full border-collapse text-sm;
+    @apply my-0 border-collapse text-sm;
+    /* 前缀在前、标准在后：两者等价，老 iOS Safari（<11）只认前缀 */
+    width: -webkit-max-content;
+    width: max-content;
+    min-width: 100%;
   }
 
   .md-body th,

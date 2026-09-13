@@ -27,6 +27,7 @@
 | P12 删除后空壳残留（v1.7 追加） | 🟡 客户端兜底已完成；🟠 **服务端补丁待宿主机应用** | 根因定位到 `hermes_state.py:7506`「确保行存在」的 upsert；客户端 `removeSession()` 加 2s 复查再删 | 新增 2 条单测（88/88 全过）+ **真实链路核验**：状态序列 `1.6s:200 → 2.0s:404`、`state.db` 行数 0；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py`（需 root），见 §5.10 与坑 36 |
 | P13 安全闸门拦截提示（v1.8 追加） | ✅ 完成 | `lib/security.ts` 判据（照抄服务端文案）+ store 从 `run.completed.messages` 捞原文 + `RunStatus.vue` 琥珀色说明卡 | 新增 10 条单测（98/98 全过，含 7 条判据用例与"不误报/换轮清空"）；**真实链路核验**：transcript 确实带 `role=tool` 原文（简单一轮 2.0 KB）且正常轮不误报，见 §5.10 与坑 37 |
 | P14 发送链路迁到 `/v1/runs`（v2.0，A 方案） | ✅ 完成 | 新增 `api/runs.ts`（提交/订流/查终态/中断/审批回话/引导）+ `api/sse.ts` 抽出 `consumeSse`/`getSse` + store 双通道开关 + `RunStatus.vue` 审批卡片 + 轮末回读对账 | 新增 24 条用例（**122/122 全过**）+ **常驻真实链路 e2e**（`npm run e2e`，5 项全绿）。真链路抓到 2 个真 bug（事件名不在 `event:` 行里 → 全事件被忽略；`run.cancelled` 被判成"完成"）与 1 个字段坑（`tool` ≠ `tool_name`）；审批**真实事件在本环境触发不了**（被 smart approval 自动放行），卡片行为由 8 条组件用例锁住，见 §5.11 与坑 38/39/40 |
+| P15 移动端表格横向溢出（v2.1，分支 `fix/mobile-table-overflow`） | ✅ 完成（2026-09-13） | `lib/markdown.ts` 给表格包 `.table-wrapper`；`style.css` 加宽度契约（wrapper `overflow-x:auto` + table `max-content` + `.md-body` `min-width:0`/`overflow-wrap:anywhere`）；`MessageItem`/`ChatWindow` 补 `min-w-0` | 新增 15 条用例（`lib/markdown.spec.ts` 5 + `style.spec.ts` 5 + `components/MessageItem.spec.ts` 5，**137/137 全过**）+ `vue-tsc` 0 错误 + **Chromium 真浏览器 before/after 对照**（375 / 320 / 1280 三档，脚本与判据见 §10.3） |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -35,7 +36,11 @@
 **路径**：`/opt/data/hermes-chat-lite`（远程 `git@github.com:xd6022/hermes-chat-lite.git`，主分支 `main`）
 **当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）、P8（长会话分页与合并）已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
 
-**下一步**：① 宿主机 `docker compose up --build` 重建 → 真机点一遍（浏览器验证是唯一没做的一环，本容器 browser-use 守护进程卡死），重点按 README「上线自检」5 条走；② P5 Caddy basic_auth；③ 后续候选：`run.completed.messages` 回填工具结果到时间线（现在工具时间线只在流式过程中可见，重开就没了）、真机上把滚动位置补偿手感调一遍、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
+**分支现状**：`main` = v1.8.1；`feat/runs-transport` = v2.0（A 方案，待 review 合并）；`fix/mobile-table-overflow` = v2.1（P15 移动端表格横向溢出，基于 `feat/runs-transport`，待 review 合并）。
+
+**下一步**：① 宿主机 `docker compose up --build` 重建 → 真机点一遍，重点按 README「上线自检」9 条走；② P5 Caddy basic_auth；③ 后续候选：`run.completed.messages` 回填工具结果到时间线（现在工具时间线只在流式过程中可见，重开就没了）、真机上把滚动位置补偿手感调一遍、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
+
+> **前端真浏览器验证已不再依赖 browser-use**：本容器 browser-use 守护进程会整体卡死，改用容器内自带的 `chrome-headless-shell` + Playwright 直连（`executablePath`）跑真实内核，方法/脚本见 §10.3；卡死时别反复重试，直接走这条。
 
 **可复制命令**：
 
@@ -488,6 +493,7 @@ export interface UiMessage {
 - **用户消息**：纯文本（`white-space: pre-wrap`），不解析 markdown（避免误触发代码高亮），保留换行。
 - 代码块：`<pre><code class="hljs language-x">`，右上角"复制"按钮（`navigator.clipboard`），等宽字体。
 - markdown-it 配置：`linkify: true, breaks: true, html: false`（**html:false 是安全项**，防止 agent 输出里的原始 HTML 注入）。代码高亮用 `highlight.js` 在 `highlight` 回调里调用，失败则 fallback 为转义纯文本。
+- **表格外层套 `.table-wrapper`（v2.1）**：渲染器重写 `table_open`/`table_close`，产出 `<div class="table-wrapper thin-scroll"><table>…</table></div>`。为什么必须在渲染层做、为什么不放在 `decorate()` 里包 DOM，见 `lib/markdown.ts` 的注释与坑 43；样式契约见 §6 与 §10.3。
 - 性能：流式期间对同一气泡做**节流重渲染**（`requestAnimationFrame` 每帧最多一次 `v-html` 更新），长回复不会掉帧。
 
 ### 5.5 `InputBox.vue`
@@ -718,6 +724,7 @@ fail-closed 直接拒。换到 `/v1/runs` 后网页端**第一次能批准/拒�
 | 侧栏 | 240px / 底 `#f9fafb`，与主体 1px 分隔线 |
 | 输入区 | 固定底部，随内容增长；最大高度 40vh |
 | 移动端 | 侧栏抽屉；输入框字号 ≥16px（防 iOS 自动缩放） |
+| 超宽内容（v2.1） | **溢出只允许发生在内容自己的滚动容器里**：表格 → `.md-body .table-wrapper`（`overflow-x:auto`，表格 `width:max-content` + `min-width:100%`）；代码块 → `pre`（`overflow-x:auto`）。消息正文容器 `.md-body` 一律 `min-width:0` + `max-width:100%` + `overflow-wrap:anywhere`（长 URL/长串可断）。**页面（html/body）与消息区（scroller）永远不横向滚动** —— 禁止用 `body{overflow-x:auto}` 之类"整页横滑"当解法 |
 
 ---
 
@@ -842,7 +849,7 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | 类型与构建 | `vue-tsc --noEmit` + `vite build` | ✅ 0 类型错误；产物 280KB（gzip 109KB）/ CSS 25.4KB |
 | 界面优化三件套（v1.1） | `vitest` + 产物 CSS 核验 | ✅ 新增 17 条（54/54 全过）：搜索过滤/无命中空态/清空、折叠持久化、主题切换与持久化、隐私模式不抛异常；`dist/assets/*.css` 含 39 条 `:is(.dark *)` 与 `.dark .hljs-*` 规则；`dist/index.html` 含首帧防闪白脚本 |
 | 长会话可读性（v1.2→v1.3） | `vitest` + **真实 API 端到端** | ✅ 新增 18 条（72/72 全过）：分页 offset/到底判定/位移去重/边界合并/压缩摘要不污染正文/滚到顶自动加载与三重闸门；真实会话 206 条原始消息逐页加载后与全量读 `toEqual` **完全相等**，会话第一条已可见 |
-| 真实浏览器 | ❌ 未做 | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
+| 真实浏览器 | ❌ 未做（**2026-09-13 已补上：Chromium headless 真内核，见 §10.3**） | 本容器 browser-use 守护进程卡死（已知问题），需您在真机点一遍 |
 | Docker 构建/运行 | ❌ 未做 | 本容器未挂 docker daemon（只有 CLI），需在宿主机执行 |
 
 ---
@@ -858,6 +865,36 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | 审批真实事件 | `/opt/data/.verify/probe_approval_live.mjs` | **未能触发**：让 agent 执行 `rm -rf /tmp/<不存在的路径>` 也被 **smart approval 自动放行**；日志（含轮转文件）历史上 **0 次** `approval.request`。→ 卡片行为由 8 条组件用例锁住，真机验收项见 README 第 7 条 |
 | 通道可替代性（前置实测） | `/opt/data/.verify/probe_runs.mjs` | `/v1/runs` 有逐字流式、同一 `session_id` 连续两轮历史连续、`GET /api/sessions/{id}/messages` 能读到 run 写的消息（含 `role=tool`）、事件流消费后再连 → 404 |
 | 帧形态取证 | `/opt/data/.verify/probe_runs_tail.mjs` | 原样打印流尾：`data: {...}\n\n` + `: stream closed\n\n`，**没有 `event:` 行** → 坑 38 的直接证据 |
+
+---
+
+### 10.3 验证证据（2026-09-13，移动端表格横向溢出 / v2.1）
+
+**为什么必须真浏览器**：jsdom 不做布局，`scrollWidth` 恒为 0，溢出行为在单测里测不出来（单测只锁"结构 + CSS 契约"，见坑 43）。
+
+**方法（复现实验对照组）**：同一份探针脚本跑**两个构建产物** —— `dist-before`（修复前的 `dist`，对照组）与 `dist-after`（本分支产物）。静态站点由脚本自带的服务器提供，`/api` 与 `/health` 用 `page.route` 打桩（**真实前端产物 + 真实 CSS + 真实 markdown 渲染，只有数据是假的**）。三档视口：`375×812`（isMobile + hasTouch）/ `320×640` / `1280×800`。探针构造 4 条消息：普通文本 → **10 列超宽表** + 跟随文本 → **表格之后的普通消息** → 代码块 + 窄表 + 长 URL + **400 字符无分隔长串** + 尾文本。
+
+**脚本**（本地工具，不进仓库）：`/opt/data/.verify/table-overflow/{probe.cjs, extract.cjs, verdict.cjs}`，产物两份构建在 `dist-before/` `dist-after/`。本容器已有 headless 内核，**不需要装浏览器**：
+
+```bash
+cd /opt/data/.verify/table-overflow
+node probe.cjs --dir dist-before --port 4711 --label before && node extract.cjs before
+node probe.cjs --dir dist-after  --port 4712 --label after  && node extract.cjs after
+node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
+```
+
+| 判据 | 修复前（375） | 修复后（375） |
+| --- | --- | --- |
+| 页面不横滑 / 整页拖不动 | `doc=375 body=375`、`scrollX=0`（本来就 OK：溢出被关在消息区里） | 同左 |
+| **消息区 scroller 不横滑** | ❌ `client=375 / scroll=3353`（能左右拖 2978px） | ✅ `375 / 375` |
+| **表格溢出被关在表格区** | ❌ 无 `.table-wrapper`，裸 `table` 越出 `.md-body` 右缘 255px | ✅ wrapper `343 → 650`（可滑），另一张窄表 `343/343`（放得下、无滚动条） |
+| 手机：超宽表格自己横滑 | ❌ 无滚动容器 | ✅ 表宽 650 > 容器 343，`scrollLeft` 可动 |
+| PC（1280）：同一张表完整显示 | ❌（消息区 `1040/3489`） | ✅ 表 736 = 容器 736，无滚动条、不裁切 |
+| **表格之后的普通消息不被撑宽** | ❌ `.space-y-6` 的 `scrollWidth=598`（后续消息也跟着有多余横向空间） | ✅ 四条消息全部 `343/343` |
+| 长串/长 URL 不撑破 | —（URL 有分隔符时本身不断行） | ✅ 400 字无分隔长串无溢出（`overflow-wrap:anywhere` 生效） |
+| 意外溢出元素 / JS 错误 | `table+255px` | ✅ 0 / 0（三档 `pageErrors` 全 0） |
+
+**未验证（如实标注）**：真机 iOS Safari / Android 浏览器里的**手指横滑手感**（本容器只有 Chromium headless，用程序化 `scrollLeft` 证明"滚动容器真的能滚"，替代不了手指拖拽）；`-webkit-overflow-scrolling` 之类 iOS 专有手感的差异请真机确认。
 
 ## 11. 明确不做（v1 冻结，防范围蔓延）
 
@@ -913,3 +950,4 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 40. **★ 收到 `run.cancelled` 不能判成"完成"** → 它是"终止事件"但不是"完成事件"。把 `sawTerminal` 直接当完成判据，会让用户主动中断的那一轮显示成"完成"。要另立 `cancelled` 标记，并且中断不产出"本轮统计"。真链路 e2e 抓到的第二个真 bug。
 41. **★ 真链路 e2e 要单独放、别塞进 `npm test`** → 它打真 API + 真模型，一轮几十秒又烧 token（实测一次"自作主张"的复盘跑了 204 秒 / 45 万输入 token）。做法：用例放 `e2e/`（根配置的 `include` 是 `src/**/*.spec.ts`，天然不收录），另给 `e2e/vitest.config.ts` + `npm run e2e`。**该配置文件里的 `root` 必须写绝对路径**（实测相对路径 `'..'` 是按 CWD 解析的，会指到项目外）。另外 jsdom 的 `AbortSignal` 不是 Node 的实例，透传给真 `fetch` 会报 `Expected signal to be an instance of AbortSignal` → 真链路用例里要么不传 signal，要么换 `environment: 'node'`。
 42. **★ 探针会话要钉模型，别用网关默认** → 网关默认是 `qwen3.8-flash`，实测它会把"只回复两个字"执行成一整套 510210 复盘；探针里先 `POST /api/sessions/{id}/model {provider, model}` 钉个便宜听话的模型（如 `xyy/deepseek-flash`），既省钱又让断言稳定。断言的写法也要**只赌结构、不赌措辞**（如"正文非空 + 有 `run_id` + 有统计"），否则模型随口一改文案用例就红。
+43. **★★ 手机端超宽表格把整块聊天区撑宽（v2.1 修复）** → 症状：手机上打开含宽表格的会话，**整个消息区能左右拖**，且"表格之后的消息"也跟着有多余横向空间。根因链：`.md-body table` 原先写的是 `w-full`（`width:100%`），但**表格的 used width 不会小于各列 min-content 之和**（10 列行情表 ≈ 650px）→ 表格盒子越出消息容器右缘；而消息列表所在的 scroller 是 `overflow-y:auto`（按规范另一轴的 `overflow-x` 会同时计算为 `auto`）→ 溢出在那个滚动容器里变成"可左右拖动"，后面的消息自然一起被放大。**禁止**用 `body{overflow-x:auto}` / `.chat-container{overflow-x:auto}` 这类"整页横滑"糊过去（那是把 bug 从"消息区滚"变成"整页滚"）。正确姿势是三层：① 渲染层给每张表包 `<div class="table-wrapper">`（重写 markdown-it 的 `table_open`/`table_close`；**不要**放到 `MessageItem.decorate()` 里包 DOM —— v-html 每次重渲染都要重包一遍，流式期间每帧都跑、必漏）；② wrapper `overflow-x:auto` + `width/max-width:100%`，表格 `width:max-content`（保住列宽、不被压扁）+ `min-width:100%`（窄表仍铺满容器，观感与修复前一致）；③ flex/grid 子项要 `min-width:0`（`min-width:auto` 会按 min-content 撑开），正文容器加 `overflow-wrap:anywhere` 兜住长 URL / 无分隔长串。**验证只能靠真内核**：jsdom 不做布局（`scrollWidth` 恒 0），要看 `document.scrollWidth`、`scroller.scrollWidth`、`window.scrollTo(9999)` 之后的 `window.scrollX`（必须为 0）这三个量，且**必须与修复前的产物做对照**（修复前必现、修复后为 0 才算闭环）。脚本、三档视口与前后数字见 §10.3。

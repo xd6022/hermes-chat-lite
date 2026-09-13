@@ -101,6 +101,7 @@ chat.<域名> {
 6. 侧栏某行 hover（手机上是常显）→ 出现铅笔/垃圾桶图标：铅笔是**原位改名**（Enter 保存 / Esc 取消，重名或超 100 字会行内红字提示），垃圾桶先出 `删除「标题」？` 二次确认（**不可恢复**，删掉的若是当前会话会回到空态）。**改名/确认中直接点右侧对话区或按 Esc 会自动收起**，不必去点 ✕/取消。⚠️ 只支持单个删除，这是刻意的（服务端无批量端点 + 曾经误删过真实会话不可恢复）
 7. **审批卡片**（`/v1/runs` 通道新能力）：让 agent 做需要人工批准的操作时，状态条变成 `等待你批准：<工具名>`，下面出现蓝色卡片（工具名 + 被标红的命令原文 + 按钮）。点 `批准一次` 后服务端继续执行、卡片显示"已回话"。**注意触发概率低**：本环境里被标红的命令大多被 smart approval（辅助模型）自动放行，日志历史上 0 次真审批 → 真机若要验收，可让 agent 执行一条更激进的命令（会真执行，请自担风险），或直接看 `src/components/RunStatus.spec.ts` 的 8 条用例。想让所有通道整体退回旧行为：把 `src/stores/chat.ts` 的 `DEFAULT_TRANSPORT` 改成 `'stream'`
 8. 中断：任务跑着时点停止 → 状态条变 `回复中断`，且**服务端那一轮真的停了**（`GET /v1/runs/{id}` 的 status 变 `cancelled`；旧通道只是断开连接、服务端还在跑）
+9. **手机上打开含宽表格的会话**（例如让 agent 输出一张 10 列行情表）：**整个消息区不能左右拖动**，只有表格自己那一小块能横滑；表格**之后**的普通消息应当占满屏宽、没有多余横向空白。页面本身（`window.scrollX`）始终为 0 —— 详见 §12 坑 43 与 `docs/detailed-design.md` §10.3 的验证数字
 
 **排错对照表**（都是实测踩过的）：
 
@@ -116,6 +117,7 @@ chat.<域名> {
 | 流式变一次性返回 | 缺 `proxy_buffering off` |
 | 容器 **unhealthy** | key/反代有问题（healthcheck 打的是需要鉴权的 `/api/sessions`，不是 `/health`） |
 | 点发送毫无反应 | 早期版本的锅（错误静默）；现在会显示红色横幅 + 重试 |
+| **手机上宽表格把整个聊天区撑宽、能左右拖** | 表格原先写 `width:100%`，但表格的实际宽度**不会小于各列内容的最小宽度**（10 列 ≈ 650px）→ 溢出被消息区的滚动容器接住，变成"整块聊天区能横滑"。已在渲染层给表格包 `.table-wrapper`（`overflow-x:auto`）+ 正文容器 `min-width:0`/`overflow-wrap:anywhere` 修掉，见 docs §12 坑 43；**注意别用 `body{overflow-x:auto}` 糊**（那是把 bug 从"消息区滚"变成"整页滚"） |
 
 **操作纪律（血的教训）**：`DELETE /api/sessions/{id}` 是**硬删除**（会话 + 消息一起没，无回收站，MySQL 归档每天 21:00 才跑一次）。清理测试会话**必须用显式 id 白名单**——用 `source=api_server` 之类的条件批量删，会把真实会话一起删掉且不可恢复。详见 `docs/incident-2026-09-11-deleted-session.md`。
 
@@ -126,7 +128,9 @@ src/
 ├── api/       types.ts（接口类型）· hermes.ts（会话/历史/改删）· runs.ts（/v1/runs：提交·订流·中断·审批回话）· sse.ts（SSE 解析器，POST/GET 通用）
 ├── stores/    chat.ts（reactive store + 双通道事件归约 + 完成态判定 + 轮末回读对账）
 ├── components/ Sidebar · ChatWindow · MessageItem · InputBox · RunStatus（含审批卡片）
-└── lib/       markdown.ts（按需注册高亮语言）· format.ts（时间/分组）· theme.ts（白天/黑夜）· security.ts（安全闸门判据）
+└── lib/       markdown.ts（按需注册高亮语言 + 给表格包 `.table-wrapper`，见 §12 坑 43）· format.ts（时间/分组）· theme.ts（白天/黑夜）· security.ts（安全闸门判据）
+     style.css       超宽内容的宽度契约（表格/代码块自己滚，页面与消息区永不横滑）
+     style.spec.ts   CSS 契约回归（v2.1）；markdown.spec.ts / MessageItem.spec.ts 锁表格 wrapper 结构
      test-setup.ts   测试环境补 localStorage（见 §12 坑 24）
 e2e/           real-runs.e2e.spec.ts + vitest.config.ts（真实链路回归，`npm run e2e`，不进 `npm test`）
 docs/plans/    跨会话计划书与状态看板

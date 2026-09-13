@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { defineConfig } from 'vitest/config'
 import type { ProxyOptions } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -16,6 +17,51 @@ import vue from '@vitejs/plugin-vue'
 const API_TARGET = process.env.HERMES_API_DEV_URL || 'http://127.0.0.1:8642'
 // Hermes 容器里的变量名是 API_SERVER_KEY（HERMES_API_SERVER_KEY 只是历史别名）
 const API_KEY = process.env.API_SERVER_KEY || process.env.HERMES_API_SERVER_KEY || ''
+
+/**
+ * 构建标识（**自动生成，不要手工维护**）：界面角落里显示它，用来回答
+ * "手机上现在到底是哪一版" —— 踩过坑：手机缓存了旧入口 HTML，只能靠猜
+ *（见 docs 坑 46）。
+ *
+ * 取值顺序：`BUILD_ID` 环境变量（给 CI/部署流程留的口子，可选）→ 有 `.git` 时
+ * "短 sha · 构建时刻" → 没 `.git`（Docker 镜像里只 COPY 部分文件）时只有时刻。
+ * 时刻按北京时间格式化，方便和日志/部署时间对照。
+ */
+function makeBuildId(): { full: string; short: string } {
+  // 北京时间（和日志/部署时间对照方便）
+  const stamp = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .format(new Date())
+    .replace(/\//g, '-')
+  const compactStamp = stamp.slice(5) // 去掉年份：09-13 19:55（头部空间小）
+  let sha = ''
+  try {
+    sha = execFileSync('git', ['rev-parse', '--short', 'HEAD'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim()
+  } catch {
+    /* 没有 .git（镜像构建）→ 只用时刻 */
+  }
+  return {
+    // 完整形态（设置面板/空态用）：461d034 · 2026-09-13 19:55
+    full: sha ? `${sha} · ${stamp}` : stamp,
+    // 紧凑形态（顶栏用，手机上不挤）：461d034 或 09-13 19:55
+    short: sha || compactStamp,
+  }
+}
+
+const BUILD = process.env.BUILD_ID
+  ? { full: process.env.BUILD_ID, short: process.env.BUILD_ID }
+  : makeBuildId()
 
 export default defineConfig(({ command }) => {
   if (command === 'serve' && !API_KEY) {
@@ -45,6 +91,12 @@ export default defineConfig(({ command }) => {
 
   return {
     plugins: [vue()],
+    // 界面角落显示的构建标识（`src/vite-env.d.ts` 里有声明）：
+    // 重新部署后一眼就能确认"线上到底跑的是哪一版"，不用再靠猜
+    define: {
+      __BUILD_ID__: JSON.stringify(BUILD.full),
+      __BUILD_SHORT__: JSON.stringify(BUILD.short),
+    },
     server: {
       host: '127.0.0.1',
       port: 5173,

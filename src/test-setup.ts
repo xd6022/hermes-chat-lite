@@ -53,10 +53,10 @@ if (typeof globalThis.localStorage === 'undefined') {
   })
 }
 
-// v2.2 后台恢复把"正在跑的那一轮"记在 sessionStorage 里（见 stores/chat.ts 的
-// ACTIVE_RUN_KEY）。**同一个坑**：Node 22+ 也用实验性的 sessionStorage 遮蔽了 jsdom
-// 那份，不补的话 `sessionStorage.setItem` 会因为全局变量本身不存在而抛 ReferenceError
-//（生产代码里包了 try/catch 不会崩，但用例就测不到"记录真的落下来了"）。
+// v2.2 的"正在跑的那一轮"记录存在 localStorage（见 stores/chat.ts 的 ACTIVE_RUN_KEY）；
+// sessionStorage 这边也补一份内存实现 —— **同一个坑**（Node 22+ 用实验性实现遮蔽 jsdom）：
+// 不补的话 `sessionStorage.setItem` 会因为全局变量本身不存在而抛 ReferenceError。
+// 用例靠它断言"记录**不再**落在 sessionStorage 里"（标签页被回收后那份会丢）。
 if (typeof globalThis.sessionStorage === 'undefined') {
   Object.defineProperty(globalThis, 'sessionStorage', {
     value: new MemoryStorage(),

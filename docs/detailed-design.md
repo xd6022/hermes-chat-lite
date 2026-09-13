@@ -28,7 +28,7 @@
 | P13 安全闸门拦截提示（v1.8 追加） | ✅ 完成 | `lib/security.ts` 判据（照抄服务端文案）+ store 从 `run.completed.messages` 捞原文 + `RunStatus.vue` 琥珀色说明卡 | 新增 10 条单测（98/98 全过，含 7 条判据用例与"不误报/换轮清空"）；**真实链路核验**：transcript 确实带 `role=tool` 原文（简单一轮 2.0 KB）且正常轮不误报，见 §5.10 与坑 37 |
 | P14 发送链路迁到 `/v1/runs`（v2.0，A 方案） | ✅ 完成 | 新增 `api/runs.ts`（提交/订流/查终态/中断/审批回话/引导）+ `api/sse.ts` 抽出 `consumeSse`/`getSse` + store 双通道开关 + `RunStatus.vue` 审批卡片 + 轮末回读对账 | 新增 24 条用例（**122/122 全过**）+ **常驻真实链路 e2e**（`npm run e2e`，5 项全绿）。真链路抓到 2 个真 bug（事件名不在 `event:` 行里 → 全事件被忽略；`run.cancelled` 被判成"完成"）与 1 个字段坑（`tool` ≠ `tool_name`）；审批**真实事件在本环境触发不了**（被 smart approval 自动放行），卡片行为由 8 条组件用例锁住，见 §5.11 与坑 38/39/40 |
 | P15 移动端表格横向溢出（v2.1，分支 `fix/mobile-table-overflow`） | ✅ 完成（2026-09-13） | `lib/markdown.ts` 给表格包 `.table-wrapper`；`style.css` 加宽度契约（wrapper `overflow-x:auto` + table `max-content` + `.md-body` `min-width:0`/`overflow-wrap:anywhere`）；`MessageItem`/`ChatWindow` 补 `min-w-0` | 新增 15 条用例（`lib/markdown.spec.ts` 5 + `style.spec.ts` 5 + `components/MessageItem.spec.ts` 5，**137/137 全过**）+ `vue-tsc` 0 错误 + **Chromium 真浏览器 before/after 对照**（375 / 320 / 1280 三档，脚本与判据见 §10.3） |
-| P16 进后台/断线自动恢复（v2.2，分支 `fix/background-resume`） | ✅ 完成（2026-09-13） | `lib/page-lifecycle.ts`（前台信号 + 退避）+ `stores/chat.ts`（`hcl.activeRun` 记录、`resumeSync()`、`background` 相位、停止仍可用）+ `App.vue` 接线 + `RunStatus`/`InputBox` 文案与按钮 | 新增 21 条用例（`lib/page-lifecycle.spec.ts` 8 + `stores/resume.spec.ts` 13，**158/158 全过**）+ 常驻真链路 e2e（`e2e/background-resume.e2e.spec.ts`：掐断事件流 → 服务端仍 completed → 回前台补正文）+ **真浏览器 5 个场景**（脚本与数字见 §10.4） |
+| P16 进后台/断线自动恢复（v2.2 → v2.2.1 → v2.2.2，分支 `fix/background-resume`） | ✅ 完成（2026-09-13，含两轮真机纠偏） | `lib/page-lifecycle.ts`（前台信号 + 退避）+ `stores/chat.ts`（`hcl.activeRun` 记录、`resumeSync()`、`background` 相位、停止仍可用）+ `App.vue` 接线 + `RunStatus`/`InputBox` 文案与按钮。v2.2.1：网络类错误翻中文 + 过时横幅自愈 + 假红字自愈；v2.2.2：记录迁 `localStorage` + 没选会话时自动打开那一轮所在的会话 | 新增 31 条用例（`lib/page-lifecycle.spec.ts` 8 + `stores/resume.spec.ts` 15 + `stores/transient-error.spec.ts` 8，**168/168 全过**）+ 常驻真链路 e2e（`e2e/background-resume.e2e.spec.ts`）+ **真浏览器 7 个场景**（含"标签页被系统回收后重开"，脚本与数字见 §10.4） |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -730,7 +730,7 @@ run 由**服务端自己跑完并写进会话**，没有任何客户端订阅也
 | 组成 | 位置 | 职责 |
 | --- | --- | --- |
 | `watchForeground()` | `lib/page-lifecycle.ts` | 订阅 `visibilitychange` / `focus` / `pageshow` / `online`，过滤出"真的回到前台"后交给上层；`backoffDelay()` 提供轮询退避（1s→2s→4s→8s→16s→**30s 封顶**） |
-| in-flight 记录 | `stores/chat.ts`（`hcl.activeRun` in **sessionStorage**） | 提交后立刻写 `{sessionId, runId, sentText, startedAt}`；终态/停止时清掉。刷新、被回收、换标签页都靠它找回那一轮 |
+| in-flight 记录 | `stores/chat.ts`（`hcl.activeRun` in **localStorage**） | 提交后立刻写 `{sessionId, runId, sentText, startedAt}`；终态/停止时清掉（6h 自动作废）。**用 localStorage 不用 sessionStorage**：后者扛得住"刷新"，扛不住"标签页被系统回收后重建"（真机实测撞到，见 §10.4 的 14:13/14:14 两轮）。代价是同设备多标签页共享这条记录 —— 语义上是对的（那一轮确实在跑），代码只处理当前会话、终态即清 |
 | `resumeSync()` | `stores/chat.ts` | 幂等同步：`GET /v1/runs/{id}` 判状态 → 还在跑就进 `background` 相位并按退避继续问；已终态就把会话记录回读补进界面（复用 `reconcileTurn`）。App 挂载、四个前台事件、`openSession` 都会调它 |
 
 **相位语义**（`RunPhase` 新增 `background`）：
@@ -741,8 +741,10 @@ run 由**服务端自己跑完并写进会话**，没有任何客户端订阅也
 | `aborted` | 这一轮确实结束了（被用户停/被服务端取消/拿不到终态且无内容） | `回复中断（未收到 run.completed）` |
 
 配套细节：① 断流被系统当成错误留下的红字会**清掉**（连接断 ≠ 这一轮失败）；② `background` 下
-输入框的按钮仍是**停止**（`run_id` 从记录里取），保证"任何状态下都能取消"；③ 页面刷新后还没选会话时
-记录**不清**，等 `openSession` 之后再同步；④ 记录 6 小时后自动作废。
+输入框的按钮仍是**停止**（`run_id` 从记录里取），保证"任何状态下都能取消"；③ 页面被回收/刷新后
+**没有选中任何会话时，自动打开那一轮所在的会话**（`resumeSync` 里做，`openSession(..., {resumeAfter:false})`
+避免同一轮同步跑两遍）—— 否则用户只看到空态、看不到"还在后台执行"，也不会知道要点一下；④ 记录 6 小时后自动作废；
+⑤ 记录指向的会话若已被删除，自动打开会失败 → 记录清掉，横幅如实显示"会话不存在"。
 
 **边界（如实写清）**：`background` 只对**默认的 `runs` 通道**成立；回退到旧 `chat/stream` 时
 断连接会打断服务端那一轮，此时没有 run_id，恢复机制不介入（与旧行为一致）。`background` 期间
@@ -964,6 +966,17 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 | S3 后台执行中点停止 | 发出 `POST /v1/runs/{id}/stop`，相位 → `aborted`（Cancel 未被弄坏） |
 | S4 运行中**刷新页面** | `hcl.activeRun` 记录落盘（runId 一致）→ reload 后打开会话 → 仍识别为 `background` → 回前台 → `done` 且正文补回 |
 | S5 PC 1280 | 同一条链路同样通过（不是移动端特例） |
+| S6 回前台瞬间网络抖动 | 横幅出现（**已翻成中文**："网络请求没有发出去（断网或连接被中断），恢复后会自动重试" + 重试按钮）→ 同步成功后 **横幅消失**、正文补回、消息里无残留红字、0 JS 错误。这一格是"真机看到假报错"的复刻与修复证据 |
+| S7 **标签页被系统回收后重开**（`storageState` 模拟：新上下文，sessionStorage 空、只有 localStorage 带过来） | `localStorage` 里那条记录活下来了；**不用点任何东西**界面自己打开那一轮所在的会话并显示"任务仍在后台执行"；服务端跑完后回前台 → 自动补出正文；0 JS 错误 |
+
+**真机实测（2026-09-13 下午，两轮）**：
+
+| 轮次 | 服务端 | 客户端 |
+| --- | --- | --- |
+| 14:13:55 提交（`run_3e50cdfb…`）→ 事件流 **0 字节**（连接被掐） | ✅ 30.19s 工具完成后 `Turn ended`，回复落库 | ❌ **自动同步没触发**：页面上下文被系统重建（日志里 3 秒内 4 次 App 挂载 + 一次全新挂载），sessionStorage 被清空 → 前端不知道有 run 在跑。**这就是把记录迁到 localStorage + 自动打开会话（v2.2.2）的直接依据** |
+| 14:14:35 提交（`run_2722c66c…`，用户补了「，真机测试」） | ✅ 30.13s 工具完成后落库 | 同一上下文内正常（记录在），恢复由"回到前台"驱动 |
+
+> 两轮都**没有**出现非 2xx、没有 error/cancel 记录 —— "连接被掐 ≠ 任务被取消"在真机上稳定成立。
 
 **未验证（交给真机，如实标注）**：
 1. **真实的后台冻结语义**：Android Chrome / iOS Safari 到底何时冻结页面、何时回收、何时掐连接 —— 本容器只能"模拟连接被掐 + 人工派发 visibilitychange"，**替代不了真机**。请在手机上按 README「上线自检」第 10 条走一遍（切后台 10~30s / 几分钟各来一次）。
@@ -1026,4 +1039,5 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 41. **★ 真链路 e2e 要单独放、别塞进 `npm test`** → 它打真 API + 真模型，一轮几十秒又烧 token（实测一次"自作主张"的复盘跑了 204 秒 / 45 万输入 token）。做法：用例放 `e2e/`（根配置的 `include` 是 `src/**/*.spec.ts`，天然不收录），另给 `e2e/vitest.config.ts` + `npm run e2e`。**该配置文件里的 `root` 必须写绝对路径**（实测相对路径 `'..'` 是按 CWD 解析的，会指到项目外）。另外 jsdom 的 `AbortSignal` 不是 Node 的实例，透传给真 `fetch` 会报 `Expected signal to be an instance of AbortSignal` → 真链路用例里要么不传 signal，要么换 `environment: 'node'`。
 42. **★ 探针会话要钉模型，别用网关默认** → 网关默认是 `qwen3.8-flash`，实测它会把"只回复两个字"执行成一整套 510210 复盘；探针里先 `POST /api/sessions/{id}/model {provider, model}` 钉个便宜听话的模型（如 `xyy/deepseek-flash`），既省钱又让断言稳定。断言的写法也要**只赌结构、不赌措辞**（如"正文非空 + 有 `run_id` + 有统计"），否则模型随口一改文案用例就红。
 43. **★★ 手机端超宽表格把整块聊天区撑宽（v2.1 修复）** → 症状：手机上打开含宽表格的会话，**整个消息区能左右拖**，且"表格之后的消息"也跟着有多余横向空间。根因链：`.md-body table` 原先写的是 `w-full`（`width:100%`），但**表格的 used width 不会小于各列 min-content 之和**（10 列行情表 ≈ 650px）→ 表格盒子越出消息容器右缘；而消息列表所在的 scroller 是 `overflow-y:auto`（按规范另一轴的 `overflow-x` 会同时计算为 `auto`）→ 溢出在那个滚动容器里变成"可左右拖动"，后面的消息自然一起被放大。**禁止**用 `body{overflow-x:auto}` / `.chat-container{overflow-x:auto}` 这类"整页横滑"糊过去（那是把 bug 从"消息区滚"变成"整页滚"）。正确姿势是三层：① 渲染层给每张表包 `<div class="table-wrapper">`（重写 markdown-it 的 `table_open`/`table_close`；**不要**放到 `MessageItem.decorate()` 里包 DOM —— v-html 每次重渲染都要重包一遍，流式期间每帧都跑、必漏）；② wrapper `overflow-x:auto` + `width/max-width:100%`，表格 `width:max-content`（保住列宽、不被压扁）+ `min-width:100%`（窄表仍铺满容器，观感与修复前一致）；③ flex/grid 子项要 `min-width:0`（`min-width:auto` 会按 min-content 撑开），正文容器加 `overflow-wrap:anywhere` 兜住长 URL / 无分隔长串。**验证只能靠真内核**：jsdom 不做布局（`scrollWidth` 恒 0），要看 `document.scrollWidth`、`scroller.scrollWidth`、`window.scrollTo(9999)` 之后的 `window.scrollX`（必须为 0）这三个量，且**必须与修复前的产物做对照**（修复前必现、修复后为 0 才算闭环）。脚本、三档视口与前后数字见 §10.3。
-44. **★★ 别把"连接断了"当成"任务没了"** → 手机切后台会把 SSE 掐掉，老实现只在 `send()` 的 `finally` 里做轮末对账 → **页面被冻结/回收时那段代码根本不跑**，界面停在"正在思考…"或误报"回复中断"。要点：① `runs` 通道下 **run 是服务端自己的任务**（实测无人订阅也照跑完、客户端掐断仍然 `completed`），所以断开**不代表**取消，只有 `POST /stop` 才是取消；② 事件流**不可重连/不可重放**（断开后重连拿不到任何数据）→ 恢复只能靠 `GET /v1/runs/{id}` 判状态 + `GET /api/sessions/{id}/messages` 回读对账（**别去设计"重连 SSE 补事件"**）；③ 前端状态必须记在**页面之外**（`sessionStorage` 存 `{sessionId, runId, sentText, startedAt}`），否则刷新/被回收后整个人失忆；④ 相位要区分 `background`（服务端还在跑，等同步）与 `aborted`（确实结束了），断流顺带留下的红字要**清掉**，否则"连接断"会被读成"这一轮失败"；⑤ 恢复动作挂在 `visibilitychange`/`focus`/`pageshow`/`online` 上（**不要用 `setInterval` 保活**：后台定时器会被 throttle，白费电还不可靠）；⑥ 退避 1s→2s→…→30s 封顶，页面不可见时**不轮询**（回到前台再接手）。实测数字与三层证据（真 API / 真链路 e2e / 真浏览器）见 §10.4。
+44. **★★ 别把"连接断了"当成"任务没了"** → 手机切后台会把 SSE 掐掉，老实现只在 `send()` 的 `finally` 里做轮末对账 → **页面被冻结/回收时那段代码根本不跑**，界面停在"正在思考…"或误报"回复中断"。要点：① `runs` 通道下 **run 是服务端自己的任务**（实测无人订阅也照跑完、客户端掐断仍然 `completed`），所以断开**不代表**取消，只有 `POST /stop` 才是取消；② 事件流**不可重连/不可重放**（断开后重连拿不到任何数据）→ 恢复只能靠 `GET /v1/runs/{id}` 判状态 + `GET /api/sessions/{id}/messages` 回读对账（**别去设计"重连 SSE 补事件"**）；③ 前端状态必须记在**页面之外**（`localStorage` 存 `{sessionId, runId, sentText, startedAt}`），否则刷新/被回收后整个人失忆；**别用 `sessionStorage`**（扛不住标签页被回收重建，见坑 45）；④ 相位要区分 `background`（服务端还在跑，等同步）与 `aborted`（确实结束了），断流顺带留下的红字要**清掉**，否则"连接断"会被读成"这一轮失败"；⑤ 恢复动作挂在 `visibilitychange`/`focus`/`pageshow`/`online` 上（**不要用 `setInterval` 保活**：后台定时器会被 throttle，白费电还不可靠）；⑥ 退避 1s→2s→…→30s 封顶，页面不可见时**不轮询**（回到前台再接手）。实测数字与三层证据（真 API / 真链路 e2e / 真浏览器）见 §10.4。
+45. **★★ 记"未完成的轮次"要用 `localStorage`，不是 `sessionStorage`**（v2.2.2 真机纠正）→ 两者都扛得住"刷新"，但**安卓/iOS 把标签页整个回收后重建时 `sessionStorage` 是空的** —— 于是前端完全不知道有 run 在跑：不会显示"任务仍在后台执行"，也不会自动同步，用户只看到自己那条孤零零的消息（真机 14:13 那轮实测如此；日志特征=同一会话在几秒内出现多次 App 挂载）。改用 `localStorage` 后，配合**开机/刷新时"有未完成的记录就自动打开它所属会话"**（否则用户面对空态根本不知道要点一下）即可闭环。代价：同设备多标签页共享这条记录 —— 语义上没错（那一轮确实在跑），代码只处理当前会话、终态即清、6h 自动作废；记录指向的会话若已被删除则清掉记录。验证用 `storageState` 造"杀掉标签页再重开"（浏览器用例 S7，见 §10.4），**别只用 `page.reload()`** —— 那只覆盖"刷新"，覆盖不到"上下文被重建"。

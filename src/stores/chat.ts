@@ -358,7 +358,17 @@ export async function loadSessions(): Promise<void> {
   }
 }
 
-export async function openSession(id: string): Promise<void> {
+/**
+ * 打开会话并拉最近一页历史。
+ *
+ * `resumeAfter: false` 只给 v2.2 的 resumeSync 用：它自己会接着做同步，
+ * 不需要 openSession 再 fire-and-forget 一次（那会变成同一轮同步两遍、
+ * 也让调用方无法 await 到"同步完成"）。
+ */
+export async function openSession(
+  id: string,
+  opts: { resumeAfter?: boolean } = {},
+): Promise<void> {
   if (store.streaming) return
   store.currentId = id
   store.messages = []
@@ -385,7 +395,7 @@ export async function openSession(id: string): Promise<void> {
   }
   // v2.2：打开会话后立刻对一次账 —— 页面刷新/被杀过之后，"这一轮还在后台跑"
   // 或"已经跑完了"都要在这里认出来（否则用户只看到自己那条消息、以为丢了）。
-  void resumeSync()
+  if (opts.resumeAfter !== false) void resumeSync()
 }
 
 /**
@@ -816,7 +826,8 @@ export async function respondApproval(choice: ApprovalChoice): Promise<string | 
  *   前端要补的只有一件事：**回来时把服务端状态同步成界面状态**。
  *
  * 因此这里**不引入常驻连接管理器/状态机**，只做三件小事：
- *   ① 提交后把 {sessionId, runId, sentText} 记进 sessionStorage（刷新/被回收后靠它找回）
+ *   ① 提交后把 {sessionId, runId, sentText} 记进 **localStorage**（页面刷新、甚至整个
+ *      标签页被系统回收后重建，都能靠它把那一轮找回来）
  *   ② 回到前台（visibilitychange/focus/pageshow/online）时问一次 run 状态 → 对账
  *   ③ 服务端还在跑时，按退避间隔（1s→2s→4s→…→30s 封顶）继续问，直到终态
  * 后台 JS 不承担任何"保活"职责（定时器会被 throttle，连接会被系统掐），
@@ -826,6 +837,25 @@ export async function respondApproval(choice: ApprovalChoice): Promise<string | 
 const ACTIVE_RUN_KEY = 'hcl.activeRun'
 /** 记录超过这个时长就当垃圾清掉（服务端也不会保留那么久的 run） */
 const ACTIVE_RUN_TTL_MS = 6 * 3600_000
+
+/**
+ * 为什么用 localStorage 而不是 sessionStorage（2026-09-13 真机实测纠正过一轮）：
+ * sessionStorage 只在**同一个标签页上下文**里活着 —— 它扛得住"刷新"，但扛不住
+ * **安卓/iOS 把标签页整个回收后重建**（那种情况下 sessionStorage 是空的）。
+ * 真机上就撞到了：13:13 提交的那一轮，页面上下文被系统重建后前端完全不知道有 run 在跑，
+ * 自动同步没触发，只能靠用户点开会话。
+ *
+ * 代价（已知并接受）：同设备多标签页共享这条记录 —— 语义上是对的，那一轮确实还在跑；
+ * 代码只处理"当前会话"的那条，且一到终态就清，不会串到别的会话上去。
+ */
+const ACTIVE_RUN_STORE: Storage | null = (() => {
+  try {
+    return typeof localStorage === 'undefined' ? null : localStorage
+  } catch {
+    /* 隐私模式下访问 localStorage 会抛，退化成"仅本页生命周期内有效" */
+    return null
+  }
+})()
 
 export interface ActiveRunRecord {
   sessionId: string
@@ -838,15 +868,15 @@ export interface ActiveRunRecord {
 
 function clearActiveRun(): void {
   try {
-    sessionStorage.removeItem(ACTIVE_RUN_KEY)
+    ACTIVE_RUN_STORE?.removeItem(ACTIVE_RUN_KEY)
   } catch {
-    /* 隐私模式 / 无 sessionStorage：退化成"仅本页生命周期内有效" */
+    /* 隐私模式 / 无 localStorage：退化成"仅本页生命周期内有效" */
   }
 }
 
 function writeActiveRun(rec: ActiveRunRecord): void {
   try {
-    sessionStorage.setItem(ACTIVE_RUN_KEY, JSON.stringify(rec))
+    ACTIVE_RUN_STORE?.setItem(ACTIVE_RUN_KEY, JSON.stringify(rec))
   } catch {
     /* 同上：写不进去也不能影响发送 */
   }
@@ -854,7 +884,7 @@ function writeActiveRun(rec: ActiveRunRecord): void {
 
 function readActiveRun(): ActiveRunRecord | null {
   try {
-    const raw = sessionStorage.getItem(ACTIVE_RUN_KEY)
+    const raw = ACTIVE_RUN_STORE?.getItem(ACTIVE_RUN_KEY) ?? null
     if (!raw) return null
     const rec = JSON.parse(raw) as ActiveRunRecord
     if (!rec?.runId || !rec?.sessionId) return null
@@ -1018,7 +1048,31 @@ export async function resumeSync(): Promise<void> {
   if (resyncing) return
   const rec = readActiveRun()
   if (!rec) return
-  // 刷新后还没选会话：留着记录，等 openSession 之后再来同步（别在这里清掉）
+
+  /*
+   * 还没选会话（页面被回收/刷新后重新打开）→ **直接把那一轮所在的会话打开**。
+   *
+   * 为什么必须这么做：刷新/被回收后 currentId 是空的（会话选择没有持久化），
+   * 界面停在"未选中会话"的空态 —— 用户看不到"任务仍在后台执行"，也就不会去点它。
+   * 真机实测（2026-09-13 14:14）就是卡在这儿：服务端的回复早跑完了，前端一动不动，
+   * 直到用户自己点了一下会话。
+   *
+   * 注意 openSession() 末尾也会调一次本函数（幂等）→ 同步由那一次完成，这里直接返回，
+   * 用 `resumeAfter: false` 让 openSession 别再自己调一次本函数：同步由**这里**接着做完，
+   * 这样调用方（App 挂载 / 前台事件）能 await 到"同步完成"，也不会把同一轮跑两遍。
+   */
+  if (!store.currentId && rec.sessionId) {
+    // resumeAfter: false —— 同步由本函数接下来自己做完（可被调用方 await），
+    // 避免 openSession 里那次 fire-and-forget 与本函数并发跑同一轮同步
+    await openSession(rec.sessionId, { resumeAfter: false })
+    // 会话已经被删/归档了 → 记录没有意义，清掉（横幅照旧显示"会话不存在"，那是真信息）
+    if (store.bootError) {
+      clearActiveRun()
+      stopWatching()
+      return
+    }
+    // 拿到会话了 → 继续往下走正常的"问状态 + 对账"
+  }
   if (!store.currentId) return
 
   if (store.streaming) {
@@ -1041,7 +1095,7 @@ export async function resumeSync(): Promise<void> {
 
 export function stop(): void {
   // 后台执行中（background）也能停：这时本地没有 abortCtl（send() 早已收尾），
-  // run_id 从 sessionStorage 的记录里取 —— 用户的"停止"在任何状态下都必须有效。
+  // run_id 从 localStorage 的记录里取 —— 用户的"停止"在任何状态下都必须有效。
   const runId = store.run.runId ?? readActiveRun()?.runId ?? null
   if (sendTransport() === 'runs' && runId) {
     // runs 通道下"断开连接"≠"停止"：断流后服务端那一轮还在跑，必须显式停。

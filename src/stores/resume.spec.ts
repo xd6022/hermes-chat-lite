@@ -5,7 +5,7 @@
  *  1. 切后台把连接掐了 → **不能标"中断"**，界面要如实说"还在后台执行"
  *  2. 回到前台 → 问服务端要状态 → 跑完了就用会话记录补正文、标完成
  *  3. 服务端还在跑 → 按退避轮询（1s→2s→4s…），不再盲目标"中断"
- *  4. 页面刷新/被回收 → sessionStorage 里的记录把那一轮找回来
+ *  4. 页面刷新/被系统回收重建 → **localStorage** 里的记录把那一轮找回来
  *  5. 用户点停止 → 任何状态下都能真的取消（POST /stop），相位回到"中断"
  * 另有：离线时留记录重试、run 超出保留窗口（404）时只能靠会话历史对账。
  *
@@ -114,9 +114,9 @@ function stubFetch(): void {
   )
 }
 
-/** 读 sessionStorage 里那条"正在跑的一轮"记录 */
+/** 读 localStorage 里那条"正在跑的一轮"记录 */
 function storedRecord() {
-  const raw = sessionStorage.getItem('hcl.activeRun')
+  const raw = localStorage.getItem('hcl.activeRun')
   return raw ? JSON.parse(raw) : null
 }
 
@@ -142,7 +142,7 @@ beforeEach(() => {
   statusQueue = []
   transcript = []
   streamMode = 'die'
-  sessionStorage.clear()
+  localStorage.clear()
   stubFetch()
 })
 
@@ -211,9 +211,9 @@ describe('回到前台同步（测试 2/4）', () => {
     expect(storedRecord()).toBeNull()
   })
 
-  it('刷新页面（本地状态全没了）→ 靠 sessionStorage 的记录把这一轮找回来', async () => {
+  it('刷新页面（本地状态全没了）→ 靠记录把这一轮找回来', async () => {
     // 模拟刷新前留下的记录
-    sessionStorage.setItem(
+    localStorage.setItem(
       'hcl.activeRun',
       JSON.stringify({ sessionId: SID, runId: RUN_ID, sentText: SENT, startedAt: Date.now() - 30_000 }),
     )
@@ -234,16 +234,66 @@ describe('回到前台同步（测试 2/4）', () => {
     expect(storedRecord()).toBeNull()
   })
 
-  it('刷新后还没选会话 → 先不动记录（等 openSession 之后再同步）', async () => {
-    sessionStorage.setItem(
+  it('★ 被系统回收后重开（没选任何会话）→ 自动打开那一轮所在的会话并同步', async () => {
+    // 真机实测（2026-09-13 14:14）就是这一格：页面被回收重建后 currentId 是空的，
+    // 用户不点会话就永远看不到"还在后台执行"
+    localStorage.setItem(
       'hcl.activeRun',
       JSON.stringify({ sessionId: SID, runId: RUN_ID, sentText: SENT, startedAt: Date.now() }),
     )
     const mod = await freshRuns()
+    expect(mod.store.currentId).toBeNull()
+
     statusQueue = [{ run_id: RUN_ID, status: 'running' }]
     await mod.resumeSync()
-    expect(storedRecord()).not.toBeNull() // 记录还在
-    expect(calls.filter((c) => c === `GET /v1/runs/${RUN_ID}`)).toHaveLength(0) // 也没乱问
+
+    expect(mod.store.currentId).toBe(SID) // 自己把会话打开了
+    expect(calls).toContain(`GET /api/sessions/${SID}/messages?order=latest&limit=100&offset=0`)
+    expect(mod.store.run.phase).toBe('background')
+  })
+
+  it('★ 已修复"标签页被回收"：记录换了存储也在（sessionStorage 清空不影响）', async () => {
+    const mod = await freshRuns()
+    statusQueue = [{ run_id: RUN_ID, status: 'running' }]
+    await mod.send(SENT)
+
+    // 记录必须落在 localStorage（sessionStorage 扛不住"标签页被系统回收后重建"）
+    expect(localStorage.getItem('hcl.activeRun')).not.toBeNull()
+    expect(sessionStorage.getItem('hcl.activeRun')).toBeNull()
+
+    // 模拟"新上下文"：sessionStorage 是空的（清掉），但 localStorage 还在
+    sessionStorage.clear()
+    statusQueue = [{ run_id: RUN_ID, status: 'completed' }]
+    transcript = serverTurn('换上下文后同步到的正文')
+    await mod.resumeSync()
+    expect(mod.store.run.phase).toBe('done')
+    expect(mod.store.messages.at(-1)?.content).toBe('换上下文后同步到的正文')
+  })
+
+  it('记录指向的会话已被删除 → 自动打开失败就把记录清掉（不留死循环）', async () => {
+    localStorage.setItem(
+      'hcl.activeRun',
+      JSON.stringify({ sessionId: 'gone', runId: RUN_ID, sentText: SENT, startedAt: Date.now() }),
+    )
+    const mod = await freshRuns()
+    // 让 messages 返回 404：临时替换 fetch 比给原 stub 加分支更直观
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        calls.push(`GET ${url}`)
+        if (url.startsWith('/api/sessions/gone/messages')) {
+          return new Response(JSON.stringify({ error: { message: 'not found' } }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
+      }),
+    )
+
+    await mod.resumeSync()
+    expect(storedRecord()).toBeNull() // 记录被清（会话都没了）
   })
 
   it('僵尸流：本地流还挂着但服务端已经结束 → 主动掐断本地流（交给 send() 收尾）', async () => {
@@ -352,7 +402,7 @@ describe('用户主动停止（测试 5：不能因为这次修复而失效）',
   })
 
   it('刷新过页面后点停止 → run_id 从记录里取，照样能取消', async () => {
-    sessionStorage.setItem(
+    localStorage.setItem(
       'hcl.activeRun',
       JSON.stringify({ sessionId: SID, runId: RUN_ID, sentText: SENT, startedAt: Date.now() }),
     )

@@ -99,7 +99,8 @@ describe('真实链路：进后台（掐断事件流）→ 回前台自动恢复
     expect(mod.store.messages.at(-1)?.error ?? null).toBeNull()
 
     // 记录必须落盘（刷新/被回收后靠它找回）
-    const rec = JSON.parse(sessionStorage.getItem('hcl.activeRun') || 'null')
+    // 记录必须落盘（刷新、甚至标签页被系统回收重建后都靠它找回 → 所以在 localStorage）
+    const rec = JSON.parse(localStorage.getItem('hcl.activeRun') || 'null')
     expect(rec?.runId).toBe(runId)
 
     // ④ 等服务端自己跑完（**客户端全程没有再订阅**）
@@ -121,7 +122,7 @@ describe('真实链路：进后台（掐断事件流）→ 回前台自动恢复
     expect(mod.store.run.phase).toBe('done')
     expect(mod.store.run.recovered).toBe(true)
     expect((last?.content ?? '').trim().length).toBeGreaterThan(0)
-    expect(sessionStorage.getItem('hcl.activeRun')).toBeNull() // 记录已清
+    expect(localStorage.getItem('hcl.activeRun')).toBeNull() // 记录已清
 
     // ⑥ 清理：按 id 删探针会话（硬删除，只删自己建的这一个）
     const del = await api(`/api/sessions/${SID}`, 'DELETE')

@@ -181,6 +181,19 @@ describe('切后台把连接掐了（测试 1）', () => {
 })
 
 describe('回到前台同步（测试 2/4）', () => {
+  it('★ 断流时留下的错误红字，在"其实已完成"时会被清掉（假报错）', async () => {
+    const mod = await freshRuns()
+    // 流断（网络错误）+ 服务端其实跑完了：这是真机上"Failed to fetch 挂在成功回复下面"的形态
+    streamMode = 'die'
+    statusQueue = [{ run_id: RUN_ID, status: 'completed' }]
+    transcript = serverTurn('已经跑完的正文')
+    await mod.send(SENT)
+
+    expect(mod.store.run.phase).toBe('done')
+    expect(mod.store.messages.at(-1)?.content).toBe('已经跑完的正文')
+    expect(mod.store.messages.at(-1)?.error ?? null).toBeNull()
+  })
+
   it('服务端已完成 → 用会话记录补正文、标完成、清掉记录', async () => {
     const mod = await freshRuns()
     statusQueue = [{ run_id: RUN_ID, status: 'running' }]

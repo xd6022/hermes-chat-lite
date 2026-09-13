@@ -183,10 +183,62 @@ let loadedIds = new Set<number>()
 
 /* ---------------- 工具函数 ---------------- */
 
+/**
+ * 这一类错误是"请求根本没到服务端"（断网/连接被中断），不是服务端返回的错误。
+ * 各家用词不同，且都是英文原话（用户看到的横幅就是这句 "Failed to fetch"）：
+ *   Chrome/Edge:  Failed to fetch
+ *   Safari:       Load failed
+ *   Firefox:      NetworkError when attempting to fetch resource.
+ *   Node/undici:  fetch failed
+ * 只认这些固定措辞（**不按 `e.name === 'TypeError'` 泛匹配**）：否则代码里的
+ * TypeError 会被误报成网络问题，反而更难查。
+ */
+function isNetworkError(e: Error): boolean {
+  return /^(failed to fetch|load failed|networkerror|network request failed|fetch failed)/i.test(
+    e.message.trim(),
+  )
+}
+
 export function msgOf(e: unknown): string {
   if (e instanceof HermesApiError) return e.message
-  if (e instanceof Error) return e.message
+  if (e instanceof Error) {
+    if (isNetworkError(e)) {
+      return '网络请求没有发出去（断网或连接被中断），恢复后会自动重试'
+    }
+    return e.message
+  }
   return String(e)
+}
+
+/**
+ * 顶部横幅（`store.bootError`）是不是"网络抖动"造成的（v2.2 修补）。
+ *
+ * 为什么需要区分：手机回到前台时网络还在恢复，任何一个请求都可能以网络错误失败，
+ * 横幅会一直挂在那儿 —— 可**下一次能连上就说明它已经过时了**，必须清掉，
+ * 否则用户会以为任务/连接出问题了（实测就撞到：回复已经补出来了，顶部还挂着
+ * "Failed to fetch"）。
+ *
+ * 但不能"成功就无条件清"：像"会话不存在（可能已被删除）"这种是服务端明确告诉我们的
+ * 真实问题（`HermesApiError`，带状态码），清掉等于把它藏起来 —— 那正是早期
+ * "错误静默"踩过的坑。
+ */
+let bootErrorTransient = false
+
+/** 记下横幅错误，并判断它是不是"网络抖动"类 */
+function setBootError(e: unknown): void {
+  store.bootError = msgOf(e)
+  bootErrorTransient = !(e instanceof HermesApiError)
+}
+
+/** 无条件清掉横幅（用户主动重试、开始新一轮、切换会话时用） */
+export function clearBootError(): void {
+  store.bootError = null
+  bootErrorTransient = false
+}
+
+/** 只有"过时的网络类横幅"才清（任意一次成功请求 = 连接已恢复的证据） */
+export function clearTransientBootError(): void {
+  if (bootErrorTransient) clearBootError()
 }
 
 function isAbortError(e: unknown): boolean {
@@ -284,6 +336,7 @@ export async function checkHealth(): Promise<void> {
     const h = await health()
     store.healthOk = h.status === 'ok'
     store.healthVersion = h.version ?? ''
+    clearTransientBootError() // 能连上服务端 → 过时的网络类横幅作废
   } catch {
     store.healthOk = false
   }
@@ -297,8 +350,9 @@ export async function loadSessions(): Promise<void> {
     const res = await getSessions(200)
     // 隐藏/归档的不进侧栏
     store.sessions = res.data.filter((s) => !s.hidden && !s.archived)
+    clearTransientBootError()
   } catch (e) {
-    store.bootError = msgOf(e)
+    setBootError(e)
   } finally {
     store.sessionsLoading = false
   }
@@ -308,7 +362,7 @@ export async function openSession(id: string): Promise<void> {
   if (store.streaming) return
   store.currentId = id
   store.messages = []
-  store.bootError = null
+  clearBootError()
   store.messagesLoading = true
   store.run.phase = 'idle'
   store.run.timeline = []
@@ -325,7 +379,7 @@ export async function openSession(id: string): Promise<void> {
     store.hasMoreHistory = res.data.length >= HISTORY_PAGE
   } catch (e) {
     store.messages = []
-    store.bootError = msgOf(e)
+    setBootError(e)
   } finally {
     store.messagesLoading = false
   }
@@ -356,7 +410,7 @@ export async function loadEarlier(): Promise<void> {
     // 两种"到底了"：不满一页，或这一页全是重复（窗口已位移到没有新内容）
     store.hasMoreHistory = res.data.length >= HISTORY_PAGE && fresh.length > 0
   } catch (e) {
-    store.bootError = msgOf(e)
+    setBootError(e)
   } finally {
     store.historyLoading = false
   }
@@ -371,12 +425,12 @@ export async function newChat(): Promise<string | null> {
     loadedIds = new Set()
     store.rawCount = 0
     store.hasMoreHistory = false
-    store.bootError = null
+    clearBootError()
     store.run.phase = 'idle'
     store.run.timeline = []
     return res.session.id
   } catch (e) {
-    store.bootError = msgOf(e)
+    setBootError(e)
     return null
   }
 }
@@ -493,6 +547,12 @@ interface TurnCtx {
   /** 这一轮被取消（服务端 run.cancelled）—— 不能算"完成" */
   cancelled: boolean
   sawError: boolean
+  /**
+   * 错误来自**客户端这边的传输层**（fetch 被网络/浏览器打断），不是服务端告诉我们失败。
+   * 区分它是为了收尾时能纠错：流断了但 `GET /v1/runs/{id}` 说 completed 时，
+   * 那个红字是假报错，必须清掉（真机撞到：成功的回复下面挂着 "Failed to fetch"）。
+   */
+  transportError: boolean
   usage: HermesUsage | null
 }
 
@@ -844,6 +904,7 @@ async function recoverTurn(sid: string, sentText: string): Promise<boolean> {
     sawTerminal: true,
     cancelled: false,
     sawError: false,
+    transportError: false,
     usage: null,
   }
   return reconcileTurn(ctx, sentText)
@@ -865,6 +926,10 @@ async function applyRunStatus(rec: ActiveRunRecord): Promise<boolean> {
   } finally {
     store.run.syncing = false
   }
+
+  // 这一句能跑下来（不论 run 是什么状态、哪怕是 404）就证明"现在连得上服务端" →
+  // 之前因网络抖动挂上的横幅已经过时，清掉（v2.2 修补）
+  clearTransientBootError()
 
   if (st && !isTerminalStatus(st.status)) {
     // 还在跑（含等人审批）：把界面切成"后台执行中"，并修好计时基准。
@@ -1056,7 +1121,7 @@ export async function send(text: string): Promise<void> {
   const asst = store.messages[store.messages.length - 1]
 
   store.streaming = true
-  store.bootError = null
+  clearBootError()
   stopRequested = false
   resetRun()
   abortCtl = new AbortController()
@@ -1069,6 +1134,7 @@ export async function send(text: string): Promise<void> {
     sawTerminal: false,
     cancelled: false,
     sawError: false,
+    transportError: false,
     usage: null,
   }
 
@@ -1086,6 +1152,7 @@ export async function send(text: string): Promise<void> {
       store.run.phase = 'error'
       store.run.errorMessage = asst.error
       ctx.sawError = true
+      ctx.transportError = true // 到这里只可能是传输层异常（服务端错误走 error 事件）
     }
   } finally {
     // 事件流是"没收到终止事件就结束了"吗？（runs 通道的流一次性、不可重连，
@@ -1114,6 +1181,14 @@ export async function send(text: string): Promise<void> {
           ctx.sawTerminal = true
           if (!asst.content && typeof st.output === 'string') asst.content = st.output
           ctx.usage = st.usage ?? ctx.usage
+          // ★ 流是"客户端这边断的"（网络类异常），而服务端说这一轮**完成了** →
+          //   那个红字是假报错，清掉（真机撞到：回复已补出来，下面还挂着 "Failed to fetch"）。
+          //   服务端真失败的情况走 run.failed / error 事件，transportError 为 false，不受影响。
+          if (ctx.transportError) {
+            ctx.sawError = false
+            asst.error = null
+            store.run.errorMessage = null
+          }
         } else if (st.status === 'failed') {
           ctx.sawTerminal = true
           ctx.sawError = true

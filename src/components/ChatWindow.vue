@@ -7,7 +7,7 @@
  * 更早的由"加载更早的消息"按钮按 offset 翻页（offset 从最新往回数，见 §5.9）。
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { loadEarlier, loadSessions, openSession, store } from '../stores/chat'
+import { clearBootError, loadEarlier, loadSessions, openSession, store } from '../stores/chat'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
 import InputBox from './InputBox.vue'
@@ -87,7 +87,7 @@ onMounted(() => {
 
 /** 出错后重试：有会话就重载当前会话，否则重拉列表 */
 function retry(): void {
-  store.bootError = null
+  clearBootError()
   if (store.currentId) void openSession(store.currentId)
   else void loadSessions()
 }
@@ -96,7 +96,7 @@ function retry(): void {
 <template>
   <section class="flex min-h-0 min-w-0 flex-1 flex-col">
     <!-- 错误横幅：创建会话 / 拉列表失败时必须可见（否则点发送会"没反应"） -->
-    <div v-if="store.bootError" class="mx-auto w-full max-w-chat px-4 pt-3">
+    <div v-if="store.bootError" data-testid="boot-error" class="mx-auto w-full max-w-chat px-4 pt-3">
       <div
         class="flex items-start gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"
       >

@@ -139,10 +139,12 @@ describe('审批卡片', () => {
     expect(w.text()).not.toContain('需要你批准')
   })
 
-  it('recovered 为真时提示"已从会话记录回读补齐"', () => {
+  // v2.2 起文案改成"从服务端会话记录同步回来"（覆盖 后台/断线 两种情况），
+  // 且 background 阶段不显示（那时还没同步完）
+  it('recovered 为真时提示"本轮内容已从服务端会话记录同步回来"', () => {
     store.run.phase = 'done'
     store.run.recovered = true
     const w = mount(RunStatus)
-    expect(w.text()).toContain('已从会话记录回读补齐')
+    expect(w.text()).toContain('已从服务端会话记录同步回来')
   })
 })

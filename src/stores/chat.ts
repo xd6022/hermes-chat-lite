@@ -20,6 +20,8 @@ import {
 } from '../api/hermes'
 import { approveRun, getRun, runEvents, stopRun, submitRun } from '../api/runs'
 import { isCompactionNote } from '../lib/messages'
+// v2.2 后台/断线恢复：页面生命周期信号 + 退避间隔（见文件下半部分的 resumeSync）
+import { backoffDelay, isForeground } from '../lib/page-lifecycle'
 import { securityBlock, type SecurityBlock } from '../lib/security'
 import type {
   ApprovalChoice,
@@ -31,6 +33,7 @@ import type {
   SseDelta,
   SseError,
   SseRunCompleted,
+  RunStatusResponse,
 } from '../api/types'
 
 export interface UiMessage {
@@ -83,6 +86,12 @@ export type RunPhase =
   /** 服务端在等我们回话（审批）——这一轮**卡住不会自己走**，必须回话 */
   | 'approval'
   | 'writing'
+  /**
+   * 连接断了/页面刚从后台回来，但**服务端那一轮还在跑**（v2.2）。
+   * 与 `aborted` 的区别：aborted = 这一轮不会再变了；background = 还在跑，
+   * 界面正在按退避间隔问服务端要状态，回来就自动补消息。
+   */
+  | 'background'
   | 'done'
   | 'aborted'
   | 'error'
@@ -154,6 +163,11 @@ export const store = reactive({
      * 界面据此标注一句"已回读对账"，用户才知道为什么会话里还有内容。
      */
     recovered: false,
+    /**
+     * 正在跟服务端要状态/补消息（v2.2）。为 true 时状态条显示"正在同步…"，
+     * 让用户知道"不是卡住了，是在对齐"。
+     */
+    syncing: false,
   },
 })
 
@@ -315,6 +329,9 @@ export async function openSession(id: string): Promise<void> {
   } finally {
     store.messagesLoading = false
   }
+  // v2.2：打开会话后立刻对一次账 —— 页面刷新/被杀过之后，"这一轮还在后台跑"
+  // 或"已经跑完了"都要在这里认出来（否则用户只看到自己那条消息、以为丢了）。
+  void resumeSync()
 }
 
 /**
@@ -638,6 +655,9 @@ async function runTurn(ctx: TurnCtx, text: string, signal: AbortSignal): Promise
   const sub = await submitRun(text, ctx.sid)
   ctx.runId = sub.run_id
   store.run.runId = sub.run_id
+  // 立刻落记录（v2.2）：run 已经提交给服务端了，从这里开始"页面被冻结/刷新/回收"
+  // 都不该让这一轮从界面上消失 —— 下次回到前台靠这条记录把状态要回来。
+  writeActiveRun({ sessionId: ctx.sid, runId: sub.run_id, sentText: text, startedAt: Date.now() })
   await runEvents(sub.run_id, (n, d) => applyEvent(ctx, n, d), signal)
 }
 
@@ -726,8 +746,238 @@ export async function respondApproval(choice: ApprovalChoice): Promise<string | 
   }
 }
 
+/* ============================================================
+ * v2.2：浏览器进后台 / 断线后的自动恢复
+ *
+ * 架构前提（**实测确认，见 docs §10.4**）：
+ *   `POST /v1/runs` 只是"提交"，run 由**服务端自己跑完并写进会话**，
+ *   没有任何客户端订阅也照跑（实测：无人订阅的 run 24s 后 completed，
+ *   正文已落库）。所以"前端连接"与"任务执行"本来就是解耦的 ——
+ *   前端要补的只有一件事：**回来时把服务端状态同步成界面状态**。
+ *
+ * 因此这里**不引入常驻连接管理器/状态机**，只做三件小事：
+ *   ① 提交后把 {sessionId, runId, sentText} 记进 sessionStorage（刷新/被回收后靠它找回）
+ *   ② 回到前台（visibilitychange/focus/pageshow/online）时问一次 run 状态 → 对账
+ *   ③ 服务端还在跑时，按退避间隔（1s→2s→4s→…→30s 封顶）继续问，直到终态
+ * 后台 JS 不承担任何"保活"职责（定时器会被 throttle，连接会被系统掐），
+ * 所有恢复动作都由"回到前台"这一个事件驱动。
+ * ============================================================ */
+
+const ACTIVE_RUN_KEY = 'hcl.activeRun'
+/** 记录超过这个时长就当垃圾清掉（服务端也不会保留那么久的 run） */
+const ACTIVE_RUN_TTL_MS = 6 * 3600_000
+
+export interface ActiveRunRecord {
+  sessionId: string
+  runId: string
+  /** 本轮发送文本：回读对账时用它切出"本轮那一段" */
+  sentText: string
+  /** 提交时刻（**墙钟** ms —— 跨页面刷新只能用它） */
+  startedAt: number
+}
+
+function clearActiveRun(): void {
+  try {
+    sessionStorage.removeItem(ACTIVE_RUN_KEY)
+  } catch {
+    /* 隐私模式 / 无 sessionStorage：退化成"仅本页生命周期内有效" */
+  }
+}
+
+function writeActiveRun(rec: ActiveRunRecord): void {
+  try {
+    sessionStorage.setItem(ACTIVE_RUN_KEY, JSON.stringify(rec))
+  } catch {
+    /* 同上：写不进去也不能影响发送 */
+  }
+}
+
+function readActiveRun(): ActiveRunRecord | null {
+  try {
+    const raw = sessionStorage.getItem(ACTIVE_RUN_KEY)
+    if (!raw) return null
+    const rec = JSON.parse(raw) as ActiveRunRecord
+    if (!rec?.runId || !rec?.sessionId) return null
+    if (Date.now() - (rec.startedAt || 0) > ACTIVE_RUN_TTL_MS) {
+      clearActiveRun()
+      return null
+    }
+    return rec
+  } catch {
+    return null
+  }
+}
+
+/** 服务端状态里哪些算"已经不会再变" */
+function isTerminalStatus(s: string): boolean {
+  return s === 'completed' || s === 'failed' || s === 'cancelled'
+}
+
+let watchTimer = 0
+let watchAttempt = 0
+let watching: string | null = null
+let resyncing = false
+
+function stopWatching(): void {
+  if (watchTimer) window.clearTimeout(watchTimer)
+  watchTimer = 0
+  watchAttempt = 0
+  watching = null
+}
+
+/**
+ * 回读对账（恢复路径专用）：把"被切断的那一轮"用服务端会话记录补回界面。
+ * 与 send() 收尾的 reconcileTurn 共用同一套逻辑，只是这里没有 TurnCtx。
+ */
+async function recoverTurn(sid: string, sentText: string): Promise<boolean> {
+  if (sid !== store.currentId) return false
+  let asst = [...store.messages].reverse().find((m) => m.role === 'assistant')
+  if (!asst) {
+    asst = { key: tempKey(), role: 'assistant', content: '' }
+    store.messages.push(asst)
+  }
+  asst.streaming = false
+  const ctx: TurnCtx = {
+    sid,
+    asst,
+    runId: null,
+    sawTerminal: true,
+    cancelled: false,
+    sawError: false,
+    usage: null,
+  }
+  return reconcileTurn(ctx, sentText)
+}
+
+/**
+ * 问一次服务端状态并落到界面。返回 true = 已到终态（不必再轮询）。
+ * 幂等：可以反复调用。
+ */
+async function applyRunStatus(rec: ActiveRunRecord): Promise<boolean> {
+  store.run.syncing = true
+  let st: RunStatusResponse | null = null
+  let gone = false
+  try {
+    st = await getRun(rec.runId)
+  } catch (e) {
+    // 404 = 服务端已经没有这个 run 了（超出保留窗口/被清理）；其它错误按"暂时连不上"处理
+    if (e instanceof HermesApiError && e.status === 404) gone = true
+  } finally {
+    store.run.syncing = false
+  }
+
+  if (st && !isTerminalStatus(st.status)) {
+    // 还在跑（含等人审批）：把界面切成"后台执行中"，并修好计时基准。
+    // startedAt 用 performance.now() 的基线算；跨了页面刷新（startedAt=0）时用墙钟换算回去，
+    // 这样"已运行 Xs"显示的是从提交那一刻算起的真实时长。
+    if (!store.run.startedAt) {
+      store.run.startedAt = performance.now() - Math.max(0, Date.now() - rec.startedAt)
+    }
+    store.run.runId = rec.runId
+    store.run.phase = 'background'
+    return false
+  }
+
+  const wasStreamingHere = store.streaming
+  if (st?.status === 'completed') {
+    const ok = await recoverTurn(rec.sessionId, rec.sentText)
+    if (!ok && typeof st.output === 'string' && st.output.trim()) {
+      const asst = [...store.messages].reverse().find((m) => m.role === 'assistant')
+      if (asst && !asst.content.trim()) asst.content = st.output
+    }
+    store.run.phase = 'done'
+    store.run.recovered = store.run.recovered || ok
+    store.run.endedAt = performance.now()
+  } else if (st?.status === 'failed') {
+    await recoverTurn(rec.sessionId, rec.sentText)
+    const m = String(st.error || '这一轮失败了')
+    store.run.phase = 'error'
+    store.run.errorMessage = m
+    store.run.endedAt = performance.now()
+  } else if (st?.status === 'cancelled') {
+    store.run.phase = 'aborted'
+    store.run.endedAt = performance.now()
+  } else {
+    // gone（404）或暂时连不上：能对账就先对账（服务端已经写库的内容才是权威）
+    const ok = await recoverTurn(rec.sessionId, rec.sentText)
+    if (gone) {
+      if (ok) {
+        store.run.phase = 'done'
+        store.run.recovered = true
+      } else if (!wasStreamingHere && store.run.phase === 'background') {
+        store.run.phase = 'idle'
+      }
+      store.run.endedAt = performance.now()
+    } else {
+      // 离线：留着记录，等下一个前台/网络事件再试
+      store.run.phase = 'background'
+      return false
+    }
+  }
+  clearActiveRun()
+  stopWatching()
+  return true
+}
+
+function scheduleWatch(rec: ActiveRunRecord): void {
+  const delay = backoffDelay(watchAttempt)
+  watchAttempt += 1
+  watchTimer = window.setTimeout(() => {
+    watchTimer = 0
+    void tickWatch(rec)
+  }, delay)
+}
+
+async function tickWatch(rec: ActiveRunRecord): Promise<void> {
+  if (watching !== rec.runId) return
+  // 页面在后台时不空转（定时器本来也会被 throttle）；回到前台时 resumeSync 会重新接手
+  if (!isForeground()) return
+  const done = await applyRunStatus(rec)
+  if (!done && watching === rec.runId) scheduleWatch(rec)
+}
+
+/** 开始盯这一轮（服务端还在跑时用） */
+function watchRun(rec: ActiveRunRecord): void {
+  if (watching !== rec.runId) {
+    stopWatching()
+    watching = rec.runId
+  }
+  if (!watchTimer && isForeground()) scheduleWatch(rec)
+}
+
+/**
+ * 回到前台 / 网络恢复 / 打开会话时调用：把界面与服务端那一轮对齐。
+ * 幂等，可任意重复调用（App 挂载、visibilitychange、online、openSession 都会调它）。
+ */
+export async function resumeSync(): Promise<void> {
+  if (resyncing) return
+  const rec = readActiveRun()
+  if (!rec) return
+  // 刷新后还没选会话：留着记录，等 openSession 之后再来同步（别在这里清掉）
+  if (!store.currentId) return
+
+  if (store.streaming) {
+    // 本页那一轮还"活着"，但可能是个僵尸流（页面冻结期间 socket 已死、promise 永不 settle）。
+    // 用服务端状态判定：已终态就主动掐断本地流，让 send() 的收尾逻辑跑起来（对账 + 标完成）。
+    const st = await getRun(rec.runId).catch(() => null)
+    if (st && isTerminalStatus(st.status)) abortCtl?.abort()
+    else if (st && !isTerminalStatus(st.status)) watchRun(rec)
+    return
+  }
+
+  resyncing = true
+  try {
+    const done = await applyRunStatus(rec)
+    if (!done) watchRun(rec)
+  } finally {
+    resyncing = false
+  }
+}
+
 export function stop(): void {
-  const runId = store.run.runId
+  // 后台执行中（background）也能停：这时本地没有 abortCtl（send() 早已收尾），
+  // run_id 从 sessionStorage 的记录里取 —— 用户的"停止"在任何状态下都必须有效。
+  const runId = store.run.runId ?? readActiveRun()?.runId ?? null
   if (sendTransport() === 'runs' && runId) {
     // runs 通道下"断开连接"≠"停止"：断流后服务端那一轮还在跑，必须显式停。
     // 服务端随后会发 run.cancelled（流没断的话界面能看到）。
@@ -736,6 +986,12 @@ export function stop(): void {
     })
   }
   stopRequested = true
+  clearActiveRun()
+  stopWatching()
+  if (!store.streaming && store.run.phase === 'background') {
+    store.run.phase = 'aborted'
+    store.run.endedAt = performance.now()
+  }
   abortCtl?.abort()
 }
 
@@ -778,7 +1034,8 @@ function markToolDone(name: string, status: 'ok' | 'fail'): void {
 
 export async function send(text: string): Promise<void> {
   const content = text.trim()
-  if (!content || store.streaming) return
+  // background = 上一轮还在服务端跑着（v2.2）：不能开第二轮，先等它结束或点停止
+  if (!content || store.streaming || store.run.phase === 'background') return
 
   if (!store.currentId) {
     const id = await newChat()
@@ -844,6 +1101,12 @@ export async function send(text: string): Promise<void> {
 
     // runs 通道：再去问一次这个 run 的终态。比"猜"可靠，也让"流断了但服务端跑完了"
     // 这种情况能正确显示成完成而不是中断。
+    //
+    // v2.2 补充：问不到"终态"有两种情况，都不能标成"中断" ——
+    //   ① 服务端还在跑（running/queued/waiting_for_approval）→ 界面转 background，
+    //      由 resumeSync/轮询把结果补回来（这正是手机切后台的常态）
+    //   ② 状态接口也连不上（离线）→ 同样转 background 并留记录，回前台再同步
+    let stillRunning = false
     if (sendTransport() === 'runs' && ctx.runId && !ctx.sawTerminal) {
       const st = await getRun(ctx.runId).catch(() => null)
       if (st) {
@@ -860,7 +1123,11 @@ export async function send(text: string): Promise<void> {
         } else if (st.status === 'cancelled') {
           ctx.sawTerminal = true
           ctx.cancelled = true
+        } else {
+          stillRunning = true // running / queued / waiting_for_approval
         }
+      } else if (!stopRequested) {
+        stillRunning = true
       }
     }
 
@@ -874,7 +1141,22 @@ export async function send(text: string): Promise<void> {
       // 被服务端取消（run.cancelled）或用户点过停止 → 一律算中断。
       store.run.phase = ctx.cancelled || stopRequested || !ctx.sawTerminal ? 'aborted' : 'done'
     }
-    store.run.endedAt = performance.now()
+
+    if (stillRunning && !stopRequested) {
+      // ★ 服务端那一轮还在跑：界面必须如实说"还在后台执行"，而不是"中断"。
+      //   轮询交给 v2.2 的 watchRun（退避 1s→30s 封顶），回到前台会立刻再同步一次。
+      //
+      //   顺带把"断流"当成错误留下的痕迹抹掉：连接断 ≠ 这一轮失败，红字会骗人。
+      asst.error = null
+      store.run.errorMessage = null
+      ctx.sawError = false
+      store.run.phase = 'background'
+      const rec = readActiveRun()
+      if (rec) watchRun(rec)
+    } else {
+      clearActiveRun()
+    }
+    if (store.run.phase !== 'background') store.run.endedAt = performance.now()
 
     if (ctx.sawTerminal && !ctx.sawError && !ctx.cancelled) {
       // 每轮统计：耗时 / 输入 / 输出 / 缓存命中率（取本轮结束后的累计计数做差）

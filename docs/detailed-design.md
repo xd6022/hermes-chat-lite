@@ -28,6 +28,7 @@
 | P13 安全闸门拦截提示（v1.8 追加） | ✅ 完成 | `lib/security.ts` 判据（照抄服务端文案）+ store 从 `run.completed.messages` 捞原文 + `RunStatus.vue` 琥珀色说明卡 | 新增 10 条单测（98/98 全过，含 7 条判据用例与"不误报/换轮清空"）；**真实链路核验**：transcript 确实带 `role=tool` 原文（简单一轮 2.0 KB）且正常轮不误报，见 §5.10 与坑 37 |
 | P14 发送链路迁到 `/v1/runs`（v2.0，A 方案） | ✅ 完成 | 新增 `api/runs.ts`（提交/订流/查终态/中断/审批回话/引导）+ `api/sse.ts` 抽出 `consumeSse`/`getSse` + store 双通道开关 + `RunStatus.vue` 审批卡片 + 轮末回读对账 | 新增 24 条用例（**122/122 全过**）+ **常驻真实链路 e2e**（`npm run e2e`，5 项全绿）。真链路抓到 2 个真 bug（事件名不在 `event:` 行里 → 全事件被忽略；`run.cancelled` 被判成"完成"）与 1 个字段坑（`tool` ≠ `tool_name`）；审批**真实事件在本环境触发不了**（被 smart approval 自动放行），卡片行为由 8 条组件用例锁住，见 §5.11 与坑 38/39/40 |
 | P15 移动端表格横向溢出（v2.1，分支 `fix/mobile-table-overflow`） | ✅ 完成（2026-09-13） | `lib/markdown.ts` 给表格包 `.table-wrapper`；`style.css` 加宽度契约（wrapper `overflow-x:auto` + table `max-content` + `.md-body` `min-width:0`/`overflow-wrap:anywhere`）；`MessageItem`/`ChatWindow` 补 `min-w-0` | 新增 15 条用例（`lib/markdown.spec.ts` 5 + `style.spec.ts` 5 + `components/MessageItem.spec.ts` 5，**137/137 全过**）+ `vue-tsc` 0 错误 + **Chromium 真浏览器 before/after 对照**（375 / 320 / 1280 三档，脚本与判据见 §10.3） |
+| P16 进后台/断线自动恢复（v2.2，分支 `fix/background-resume`） | ✅ 完成（2026-09-13） | `lib/page-lifecycle.ts`（前台信号 + 退避）+ `stores/chat.ts`（`hcl.activeRun` 记录、`resumeSync()`、`background` 相位、停止仍可用）+ `App.vue` 接线 + `RunStatus`/`InputBox` 文案与按钮 | 新增 21 条用例（`lib/page-lifecycle.spec.ts` 8 + `stores/resume.spec.ts` 13，**158/158 全过**）+ 常驻真链路 e2e（`e2e/background-resume.e2e.spec.ts`：掐断事件流 → 服务端仍 completed → 回前台补正文）+ **真浏览器 5 个场景**（脚本与数字见 §10.4） |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -36,9 +37,9 @@
 **路径**：`/opt/data/hermes-chat-lite`（远程 `git@github.com:xd6022/hermes-chat-lite.git`，主分支 `main`）
 **当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）、P8（长会话分页与合并）已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
 
-**分支现状**：`main` = v1.8.1；`feat/runs-transport` = v2.0（A 方案，待 review 合并）；`fix/mobile-table-overflow` = v2.1（P15 移动端表格横向溢出，基于 `feat/runs-transport`，待 review 合并）。
+**分支现状**：`main` = v1.8.1；`feat/runs-transport` = v2.0（A 方案，待 review 合并）；`fix/mobile-table-overflow` = v2.1（P15 移动端表格横向溢出）；`fix/background-resume` = v2.2（P16 进后台/断线自动恢复，基于 v2.1）。三者是**链式**关系：合并顺序 v2.0 → v2.1 → v2.2。
 
-**下一步**：① 宿主机 `docker compose up --build` 重建 → 真机点一遍，重点按 README「上线自检」9 条走；② P5 Caddy basic_auth；③ 后续候选：`run.completed.messages` 回填工具结果到时间线（现在工具时间线只在流式过程中可见，重开就没了）、真机上把滚动位置补偿手感调一遍、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
+**下一步**：① 宿主机 `docker compose up --build` 重建 → 真机点一遍，重点按 README「上线自检」10 条走；**其中第 10 条（手机切后台再回来）只能您在真机上验**，本容器只能模拟"连接被掐 + 回前台事件"；② P5 Caddy basic_auth；③ 后续候选：`run.completed.messages` 回填工具结果到时间线（现在工具时间线只在流式过程中可见，重开就没了）、真机上把滚动位置补偿手感调一遍、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
 > **前端真浏览器验证已不再依赖 browser-use**：本容器 browser-use 守护进程会整体卡死，改用容器内自带的 `chrome-headless-shell` + Playwright 直连（`executablePath`）跑真实内核，方法/脚本见 §10.3；卡死时别反复重试，直接走这条。
 
@@ -515,7 +516,7 @@ export interface UiMessage {
 
 - `textarea` 高度自适应（`scrollHeight` 计算，上限 40vh 再减掉工具行高），超出后内部滚动。
 - 生成中：发送按钮变「停止」，点击 `stop()`；**输入框保持可输入**（只禁用发送，方便先打下一句），Enter 不再触发发送。
-- 输入框下方小字：`浏览器刷新会打断正在进行的回复 · Enter 发送 / Shift+Enter 换行`。
+- 输入框下方小字：`刷新/切后台不会取消任务（回来会自动同步） · Enter 发送 / Shift+Enter 换行`（v2.2 改：旧文案在"任务独立于前端连接"这个架构下已经不成立了）。
 
 ### 5.6 `RunStatus.vue` —— 执行可观测性（针对 Open WebUI 的核心痛点）
 
@@ -712,6 +713,41 @@ fail-closed 直接拒。换到 `/v1/runs` 后网页端**第一次能批准/拒�
 
 **遗留**：`POST .../steer`（往正在跑的一轮里插话）接口已封装（`api/runs.ts`），界面入口没做。
 
+### 5.12 浏览器进后台 / 断线后的自动恢复（v2.2 追加）
+
+**问题**：手机上切到别的 App 后浏览器会冻结页面、掐断 SSE，甚至直接回收页面。原来的实现只在
+`send()` 的 `finally` 里做"轮末对账"，那是**页面还活着**才跑得到；一旦页面被冻结/回收，界面就
+停在"正在思考…"或误报"回复中断"。
+
+**架构前提（实测，见 §10.4）**：默认的 `runs` 通道本身就是解耦的 —— `POST /v1/runs` 只负责提交，
+run 由**服务端自己跑完并写进会话**，没有任何客户端订阅也照跑（实测无人订阅的 run 24s 后
+`completed`，正文已落库）；客户端中途掐断连接，run 依然 `completed`。所以**前端不需要常驻连接**，
+它要补的只有一件：回来时把服务端状态同步成界面状态。
+
+**因此刻意不做**（简单稳定 > 功能齐全）：不引入常驻连接管理器 / 新状态机、不用 `setInterval`
+保活、不加 Service Worker / 推送、不改 Hermes 后端。实现只加了三样东西：
+
+| 组成 | 位置 | 职责 |
+| --- | --- | --- |
+| `watchForeground()` | `lib/page-lifecycle.ts` | 订阅 `visibilitychange` / `focus` / `pageshow` / `online`，过滤出"真的回到前台"后交给上层；`backoffDelay()` 提供轮询退避（1s→2s→4s→8s→16s→**30s 封顶**） |
+| in-flight 记录 | `stores/chat.ts`（`hcl.activeRun` in **sessionStorage**） | 提交后立刻写 `{sessionId, runId, sentText, startedAt}`；终态/停止时清掉。刷新、被回收、换标签页都靠它找回那一轮 |
+| `resumeSync()` | `stores/chat.ts` | 幂等同步：`GET /v1/runs/{id}` 判状态 → 还在跑就进 `background` 相位并按退避继续问；已终态就把会话记录回读补进界面（复用 `reconcileTurn`）。App 挂载、四个前台事件、`openSession` 都会调它 |
+
+**相位语义**（`RunPhase` 新增 `background`）：
+
+| 相位 | 含义 | 状态条文案 |
+| --- | --- | --- |
+| `background` | 连接断了/刚从后台回来，但**服务端那一轮还在跑** | `连接已暂时中断，任务仍在后台执行（回到页面会自动同步）`；正在同步时 → `已重新连接，正在同步最新消息…` |
+| `aborted` | 这一轮确实结束了（被用户停/被服务端取消/拿不到终态且无内容） | `回复中断（未收到 run.completed）` |
+
+配套细节：① 断流被系统当成错误留下的红字会**清掉**（连接断 ≠ 这一轮失败）；② `background` 下
+输入框的按钮仍是**停止**（`run_id` 从记录里取），保证"任何状态下都能取消"；③ 页面刷新后还没选会话时
+记录**不清**，等 `openSession` 之后再同步；④ 记录 6 小时后自动作废。
+
+**边界（如实写清）**：`background` 只对**默认的 `runs` 通道**成立；回退到旧 `chat/stream` 时
+断连接会打断服务端那一轮，此时没有 run_id，恢复机制不介入（与旧行为一致）。`background` 期间
+不允许开新一轮（避免同一会话并发两轮）。
+
 ## 6. UI 规范
 
 | 项 | 值 |
@@ -736,10 +772,10 @@ fail-closed 直接拒。换到 `/v1/runs` 后网页端**第一次能批准/拒�
 | 创建会话失败（如反代没注入 key → 401） | **必须显示可见横幅**（实测踩过：原来只在"已有消息"分支渲染错误，导致点发送毫无反应、只能去 F12 看） |
 | 会话列表为空 | 空态文案，引导新建 |
 | 历史消息 404（会话被删） | 提示"该会话已不存在"，自动回到空会话态 |
-| 流中断（网络/切后台） | 已渲染内容保留，标灰提示"回复中断"；刷新可看到落库部分 |
+| 流中断（网络/切后台） | 分两种（v2.2）：**服务端还在跑** → 状态条蓝色"连接已暂时中断，任务仍在后台执行"，回到前台自动同步；**确实已终止** → 标灰"回复中断"，已渲染内容保留 |
 | 服务端 `error` 事件 | 助手气泡内红色错误文本，输入框恢复可用 |
 | 连续点击发送 | 按钮在 `streaming === true` 时禁用（防重复 turn） |
-| 页面刷新 mid-stream | 服务端会打断本轮（已知限制，写入 README） |
+| 页面刷新 / 切后台 mid-run | **不会打断**（默认 `runs` 通道：run 由服务端自己跑完并落库，客户端回来同步即可，见 §5.12）。⚠️ 只有把通道回退成旧版 `chat/stream` 时，断连接才会打断那一轮 |
 | 流结束但没收到 `run.completed` | 标"回复中断"，不做静默处理（见 5.6 完成态判定） |
 
 ---
@@ -896,6 +932,45 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 
 **未验证（如实标注）**：真机 iOS Safari / Android 浏览器里的**手指横滑手感**（本容器只有 Chromium headless，用程序化 `scrollLeft` 证明"滚动容器真的能滚"，替代不了手指拖拽）；`-webkit-overflow-scrolling` 之类 iOS 专有手感的差异请真机确认。
 
+---
+
+### 10.4 验证证据（2026-09-13，进后台/断线自动恢复 / v2.2）
+
+**第一层：后端行为（真 API，决定性事实）** —— 脚本 `/opt/data/.verify/bg-resume/probe_backend{,2}.cjs`：
+
+| 问题 | 实测 |
+| --- | --- |
+| 提交后**完全没有客户端订阅**，run 会跑吗？ | ✅ 会。`POST /v1/runs` → 202；不订阅任何流，24.0s 后 `GET /v1/runs/{id}` = `completed`，且会话里已有 assistant 正文 `"完成"`（`/api/sessions/{id}/messages` 读到） |
+| 订阅到一半**客户端掐断连接**（模拟进后台）？ | ✅ run 继续跑完：`status=completed`，正文照常落库。**断开 ≠ 取消** |
+| 掐断后**能重连那条事件流**吗（能不能靠重放补事件）？ | ❌ 不能：重连同一 run 的 `/events` 在 8s 内没有任何数据块（本次 watchdog 主动放弃）。所以恢复只能走 `GET /v1/runs/{id}` + 会话消息，**不能依赖事件流重放** |
+| 显式 `POST /v1/runs/{id}/stop` 还有效吗？ | ✅ `200 {"status":"stopping"}` → 终态 `cancelled`（"用户主动取消"这条路没被这次改动弄坏） |
+| 服务端有没有"run 列表 / 事件增量重放"能力？ | `GET /v1/capabilities` 的 features 里有 `run_submission / run_status / run_events_sse / run_stop / run_steer / run_approval_response`，**没有** run 列表、也没有 `since`/`last_event_id` 之类的重放参数 → 所以用 sessionStorage 记录 + 会话历史对账 |
+
+**第二层：真实链路 e2e（常驻用例）** —— `e2e/background-resume.e2e.spec.ts`（`npm run e2e`，真模型 `xyy/deepseek-flash`）：
+
+```
+① run_id = run_4cfa11e3…
+② 2.5s 后掐断事件流（不调 stop）→ 界面 phase = background，界面无错误红字
+③ 断流后服务端自己跑完：status=completed（断流后 16.0s，期间客户端零订阅）
+④ 回前台 resumeSync() → phase = done，正文 = "完成"，sessionStorage 记录已清
+⑤ 清理：DELETE = 200，复查 GET = 404
+```
+
+**第三层：真浏览器（Chromium headless + 可控桩服务端）** —— 脚本 `/opt/data/.verify/bg-resume/probe_browser.cjs`，产物为 `npm run build` 的 dist：
+
+| 场景 | 结果 |
+| --- | --- |
+| S1/S2 手机 375：连接被掐 → 回前台自动同步 | 断开后界面 `data-phase=background`、文案 `连接已暂时中断，任务仍在后台执行（回到页面会自动同步）`、**停止按钮在位**；派发 `visibilitychange` 后 → `done`、正文补回（`后台跑完的最终答复`）、停止按钮消失、`pageErrors=0`。请求序列可见恢复路径：`GET /v1/runs/{id}` → `GET /api/sessions/{id}/messages` |
+| S3 后台执行中点停止 | 发出 `POST /v1/runs/{id}/stop`，相位 → `aborted`（Cancel 未被弄坏） |
+| S4 运行中**刷新页面** | `hcl.activeRun` 记录落盘（runId 一致）→ reload 后打开会话 → 仍识别为 `background` → 回前台 → `done` 且正文补回 |
+| S5 PC 1280 | 同一条链路同样通过（不是移动端特例） |
+
+**未验证（交给真机，如实标注）**：
+1. **真实的后台冻结语义**：Android Chrome / iOS Safari 到底何时冻结页面、何时回收、何时掐连接 —— 本容器只能"模拟连接被掐 + 人工派发 visibilitychange"，**替代不了真机**。请在手机上按 README「上线自检」第 10 条走一遍（切后台 10~30s / 几分钟各来一次）。
+2. iOS 上 `pageshow`（bfcache 恢复）路径：代码已覆盖，但 headless 里触发不了真实的 bfcache。
+
+**探测会话已清理**：本次探测共建 8 个 `api_server` 会话（含首轮超时被留下的），按"消息里含探测原文"的指纹列成白名单后逐个 `DELETE`，复查列表为 0（脚本 `cleanup_probe_sessions.cjs`，**只按 id 删，绝不按条件批量删**）。
+
 ## 11. 明确不做（v1 冻结，防范围蔓延）
 
 用户登录 / 权限 / 多用户 / 数据库 / 文件上传 / 图片生成 / 插件市场 / 模型切换 / Prompt 管理 / Agent 配置页 / 会话删除与收藏 / 消息重新生成 / 多标签并发流。
@@ -920,7 +995,7 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 10. **新建会话不要传 title** → 重名会被 400 拒绝并回滚。
 11. **中文输入法 isComposing** → 未处理会导致拼音回车误发送。
 12. **时间戳是 Unix 秒** → 直接 `new Date(ts)` 会得到 1970 年。
-13. **刷新页面会打断服务端 turn** → 已知限制，README 里写明。
+13. **刷新页面会不会打断服务端那一轮？** → `runs` 通道（默认）**不会**：run 是服务端自己的任务，页面刷新/被回收/切后台都不影响它，回到页面自动同步（见 §5.12）。只有把通道回退成旧 `chat/stream` 时，断连接才会打断那一轮。
 14. **markdown-it `html:false`** → 防止 agent 输出注入原始 HTML。
 15. **`tool.completed` 不带执行结果** → 服务端按 `(name, None, None)` 发出，只有工具名。想要结果得在 `run.completed.messages` 里按 `tool_call_id` 回填；别指望事件里有。**不要因为拿不到结果就退回 OpenAI 端点**（那会连工具名都看不到，正是 Open WebUI 的病）。
 16. **`tool.started` 的 `args` 是脱敏后的展示值** → 可以直接显示，但别当作真实参数入库/回传。
@@ -951,3 +1026,4 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 41. **★ 真链路 e2e 要单独放、别塞进 `npm test`** → 它打真 API + 真模型，一轮几十秒又烧 token（实测一次"自作主张"的复盘跑了 204 秒 / 45 万输入 token）。做法：用例放 `e2e/`（根配置的 `include` 是 `src/**/*.spec.ts`，天然不收录），另给 `e2e/vitest.config.ts` + `npm run e2e`。**该配置文件里的 `root` 必须写绝对路径**（实测相对路径 `'..'` 是按 CWD 解析的，会指到项目外）。另外 jsdom 的 `AbortSignal` 不是 Node 的实例，透传给真 `fetch` 会报 `Expected signal to be an instance of AbortSignal` → 真链路用例里要么不传 signal，要么换 `environment: 'node'`。
 42. **★ 探针会话要钉模型，别用网关默认** → 网关默认是 `qwen3.8-flash`，实测它会把"只回复两个字"执行成一整套 510210 复盘；探针里先 `POST /api/sessions/{id}/model {provider, model}` 钉个便宜听话的模型（如 `xyy/deepseek-flash`），既省钱又让断言稳定。断言的写法也要**只赌结构、不赌措辞**（如"正文非空 + 有 `run_id` + 有统计"），否则模型随口一改文案用例就红。
 43. **★★ 手机端超宽表格把整块聊天区撑宽（v2.1 修复）** → 症状：手机上打开含宽表格的会话，**整个消息区能左右拖**，且"表格之后的消息"也跟着有多余横向空间。根因链：`.md-body table` 原先写的是 `w-full`（`width:100%`），但**表格的 used width 不会小于各列 min-content 之和**（10 列行情表 ≈ 650px）→ 表格盒子越出消息容器右缘；而消息列表所在的 scroller 是 `overflow-y:auto`（按规范另一轴的 `overflow-x` 会同时计算为 `auto`）→ 溢出在那个滚动容器里变成"可左右拖动"，后面的消息自然一起被放大。**禁止**用 `body{overflow-x:auto}` / `.chat-container{overflow-x:auto}` 这类"整页横滑"糊过去（那是把 bug 从"消息区滚"变成"整页滚"）。正确姿势是三层：① 渲染层给每张表包 `<div class="table-wrapper">`（重写 markdown-it 的 `table_open`/`table_close`；**不要**放到 `MessageItem.decorate()` 里包 DOM —— v-html 每次重渲染都要重包一遍，流式期间每帧都跑、必漏）；② wrapper `overflow-x:auto` + `width/max-width:100%`，表格 `width:max-content`（保住列宽、不被压扁）+ `min-width:100%`（窄表仍铺满容器，观感与修复前一致）；③ flex/grid 子项要 `min-width:0`（`min-width:auto` 会按 min-content 撑开），正文容器加 `overflow-wrap:anywhere` 兜住长 URL / 无分隔长串。**验证只能靠真内核**：jsdom 不做布局（`scrollWidth` 恒 0），要看 `document.scrollWidth`、`scroller.scrollWidth`、`window.scrollTo(9999)` 之后的 `window.scrollX`（必须为 0）这三个量，且**必须与修复前的产物做对照**（修复前必现、修复后为 0 才算闭环）。脚本、三档视口与前后数字见 §10.3。
+44. **★★ 别把"连接断了"当成"任务没了"** → 手机切后台会把 SSE 掐掉，老实现只在 `send()` 的 `finally` 里做轮末对账 → **页面被冻结/回收时那段代码根本不跑**，界面停在"正在思考…"或误报"回复中断"。要点：① `runs` 通道下 **run 是服务端自己的任务**（实测无人订阅也照跑完、客户端掐断仍然 `completed`），所以断开**不代表**取消，只有 `POST /stop` 才是取消；② 事件流**不可重连/不可重放**（断开后重连拿不到任何数据）→ 恢复只能靠 `GET /v1/runs/{id}` 判状态 + `GET /api/sessions/{id}/messages` 回读对账（**别去设计"重连 SSE 补事件"**）；③ 前端状态必须记在**页面之外**（`sessionStorage` 存 `{sessionId, runId, sentText, startedAt}`），否则刷新/被回收后整个人失忆；④ 相位要区分 `background`（服务端还在跑，等同步）与 `aborted`（确实结束了），断流顺带留下的红字要**清掉**，否则"连接断"会被读成"这一轮失败"；⑤ 恢复动作挂在 `visibilitychange`/`focus`/`pageshow`/`online` 上（**不要用 `setInterval` 保活**：后台定时器会被 throttle，白费电还不可靠）；⑥ 退避 1s→2s→…→30s 封顶，页面不可见时**不轮询**（回到前台再接手）。实测数字与三层证据（真 API / 真链路 e2e / 真浏览器）见 §10.4。

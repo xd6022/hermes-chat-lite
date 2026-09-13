@@ -37,7 +37,9 @@ const secs = computed(() => `${elapsed.value.toFixed(1)}s`)
 
 const active = computed(() =>
   // 等审批时这一轮仍然"活着"（服务端卡在那儿等人回话），所以计时继续走
-  ['thinking', 'tool', 'approval', 'writing'].includes(store.run.phase) || store.streaming,
+  // background（v2.2）：本地连接断了但服务端还在跑 —— 也是"活着"，计时继续走
+  ['thinking', 'tool', 'approval', 'writing', 'background'].includes(store.run.phase) ||
+  store.streaming,
 )
 
 const toolCount = computed(() => store.run.timeline.length)
@@ -78,6 +80,12 @@ const label = computed(() => {
       return `等待你批准：${r.approval?.toolName ?? '危险操作'}`
     case 'writing':
       return '正在输出…'
+    case 'background':
+      // v2.2：连接断了，但**服务端那一轮还在跑**（手机切后台的常态）。
+      // 措辞要明确"任务没失败、也没丢"，否则用户会以为白跑了。
+      return r.syncing
+        ? '已重新连接，正在同步最新消息…'
+        : '连接已暂时中断，任务仍在后台执行（回到页面会自动同步）'
     case 'done':
       // 完成后的数字（耗时/token/缓存）在消息下方常驻显示，这里不重复
       return '完成'
@@ -94,6 +102,9 @@ const tone = computed(() => {
   switch (store.run.phase) {
     case 'done':
       return 'text-gray-500 dark:text-gray-400'
+    case 'background':
+      // 蓝色=进行中（不是错误也不是中断）：任务还在后台跑
+      return 'text-sky-700 dark:text-sky-400'
     case 'aborted':
     case 'approval':
       return 'text-amber-600 dark:text-amber-400'
@@ -106,7 +117,13 @@ const tone = computed(() => {
 </script>
 
 <template>
-  <div v-if="store.run.phase !== 'idle'" class="mx-auto w-full max-w-chat px-4 pb-1">
+  <!-- data-phase 给自动化用（真浏览器用例要靠它断言"现在是哪种状态"），与 data-testid 同惯例 -->
+  <div
+    v-if="store.run.phase !== 'idle'"
+    data-testid="run-status"
+    :data-phase="store.run.phase"
+    class="mx-auto w-full max-w-chat px-4 pb-1"
+  >
     <div class="flex items-center gap-2 text-xs" :class="tone">
       <span v-if="active" class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
       <span class="truncate" :title="store.run.toolPreview ?? ''">{{ label }}</span>
@@ -135,8 +152,12 @@ const tone = computed(() => {
     </div>
 
     <!-- 轮末回读对账的提示（事件流断了才有）：告诉用户"这些内容是从会话里补回来的" -->
-    <p v-if="store.run.recovered" class="mt-1 text-xs text-gray-400 dark:text-gray-500">
-      事件流中断，本轮内容已从会话记录回读补齐（可能与实时渲染略有差异）
+    <!-- background 阶段不显示：那时还没同步完，等真正对齐了再说"已同步"（v2.2） -->
+    <p
+      v-if="store.run.recovered && store.run.phase !== 'background'"
+      class="mt-1 text-xs text-gray-400 dark:text-gray-500"
+    >
+      本轮内容已从服务端会话记录同步回来（页面曾进入后台或连接中断，可能与实时渲染略有差异）
     </p>
 
     <!-- 审批卡片（A 方案新增能力）：服务端在等我们回话，这一轮**不会自己往下走** -->

@@ -52,3 +52,15 @@ if (typeof globalThis.localStorage === 'undefined') {
     writable: true,
   })
 }
+
+// v2.2 后台恢复把"正在跑的那一轮"记在 sessionStorage 里（见 stores/chat.ts 的
+// ACTIVE_RUN_KEY）。**同一个坑**：Node 22+ 也用实验性的 sessionStorage 遮蔽了 jsdom
+// 那份，不补的话 `sessionStorage.setItem` 会因为全局变量本身不存在而抛 ReferenceError
+//（生产代码里包了 try/catch 不会崩，但用例就测不到"记录真的落下来了"）。
+if (typeof globalThis.sessionStorage === 'undefined') {
+  Object.defineProperty(globalThis, 'sessionStorage', {
+    value: new MemoryStorage(),
+    configurable: true,
+    writable: true,
+  })
+}

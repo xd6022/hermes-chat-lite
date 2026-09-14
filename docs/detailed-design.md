@@ -32,7 +32,8 @@
 | P17 空态去示例话术（v2.2.5，`chore/remove-empty-examples`） | ✅ 完成并部署（2026-09-14） | `ChatWindow.vue` 删掉写死的三句示例按钮（`EXAMPLES` 常量），保留「有什么可以帮您？/从一个新会话开始」两行；`App.spec.ts` 加回归断言 | 全量单测通过 + 新断言 **RED/GREEN** + 构建产物三句话术 0 命中 + **线上 bundle 复验** |
 | P18 工具调用内联（v2.3 → v2.3.1，`feat/inline-tool-calls`） | ✅ 完成并部署（2026-09-14） | `stores/chat.ts`（`ToolStep` 扩字段 + `normalize()` 按 `tool_call_id` 配对 + 合并串接 + 实时同步）+ `MessageItem.vue`（工具块放**正文之前**、**默认展开**、`●/✓/✗ 名称 "参数" (耗时)`）+ `RunStatus.vue` 去掉输入框上方那份时间线 | 单测 183 + **RED/GREEN（12 条）** + 新 `e2e/tools-inline.e2e.spec.ts`（真数据 5 会话 / 827 步 / 预览 98.3% / 耗时 99.2%）+ **线上真 DOM 复验 14/14** |
 | P19 会话累计行 + 输入框 ↑ 翻历史（v2.4，`feat/session-totals-input-history`） | ✅ 完成并部署（2026-09-14） | `ChatWindow.vue` 列表末尾一行「本会话累计」（`formatCompactTokens`）+ `InputBox.vue` ↑/↓ 翻历史（输入法合成、多行非首行一律让路）+ `lib/format.ts` 新格式化 | 单测 194 + **RED/GREEN（7 条）** + **线上真 DOM 复验 14/14**（含 ↑ 填回上一条 / ↓ 还原草稿） |
-| P20 上下文水位（v2.5，`feat/context-gauge`） | 🟡 代码完成，**待宿主机重建部署**（本支改了 nginx，必须 build） | 新 `ContextGauge.vue`（贴输入框上方）+ 新 `lib/context-cache.ts`（ⓐ 上次已知）+ `stores/chat.ts` 三来源接线（会话行/`/api/model-info`/`usage.input_tokens`）+ `api/hermes.ts` + `nginx.conf`（新增 `location = /api/model-info` → `hermes:9119`） | 单测 **210** + **RED/GREEN（13 条）** + **真浏览器 14/14**（几何：贴输入框 15px、无横向溢出；配色：98% 时 computed color = `rgb(220,38,38)`）+ 本地桩端到端 **18/18**；部署后需跑线上复验 |
+| P20 上下文水位（v2.5，`feat/context-gauge`） | ✅ 完成并部署（2026-09-14） | 新 `ContextGauge.vue`（贴输入框上方）+ 新 `lib/context-cache.ts`（ⓐ 上次已知）+ `chat.ts` 三来源接线 + `nginx.conf`（`/api/model-info` → 9119） | 单测 210 + RED/GREEN 13 条 + **真浏览器 14/14** + 本地桩端到端 18/18；线上复验：水位行在线、`/api/model-info` 200、构建标识 `2026-09-14 21:30`（Docker 无 .git 只有时刻） |
+| P21 打开会话的落点（v2.6，`fix/scroll-anchor-stable`） | 🟡 代码完成，**待合并部署** | 新 `lib/scroll-anchor.ts`（高度稳定判定 + 逐帧跟随）+ `ChatWindow.vue`（ResizeObserver 盯**内容容器**、打开会话锚定窗口、`earlier()` 补偿改为等稳定）+ 新单测 | 单测 **221** + RED/GREEN（2 条核心断言红）+ **真浏览器**：多会话落点表**修后全部"距底 0"**（修前 655~2297px）、护栏"上滚不被拽回"（距底保持 1200）、"加载更早"后锚偏移 **Δ=0px**；坑 50/51 记录了四处修法与两个可复用教训 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -42,15 +43,11 @@
 **当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）、P8（长会话分页与合并）、P15～P19 已完成并部署（`main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
 
 **分支现状**（2026-09-14 收口后）：
-- `main` = `daa03e6`，已含 P15（移动端表格）、P16（后台恢复）、P17（空态去话术）、P18（工具内联）、P19（累计行 + ↑ 翻历史），且**已部署到线上**。
-- `fix/background-resume` = `a6a40d8`：`b5961c8`（v2.2.4 前端构建标识）+ 一个**合并提交**（把 main 并进来、解决 `ChatWindow.vue` 空态那处冲突：**保留构建标识、仍然不要示例话术**）。合并干跑零冲突、合并后 195 passed → **等用户合并进 main**。
-- `feat/context-gauge` = `16d5635`（P20 上下文水位）+ **已把 `fix/background-resume` 并进来**（合并提交，`docs/detailed-design.md` 的坑清单处有冲突：坑 46 的"配套/判据"两行 vs 本支新增的坑 47-49，解决口径=**两边都保留，坑 46 在前**）。所以：
-  - 想只要构建标识 → 合 `fix/background-resume`；
-  - 想连水位一起 → 合 `feat/context-gauge`（它已含前者，**不会再冲突**）；
-  - **两种顺序都不会冲突**（合并前已用 `git merge-tree` + 真合并干跑验证）。
-  含 `nginx.conf` 改动 → 合并后**必须重新 build 部署**才生效。
+- `main` = `d874a9a`（PR #10）：已含 P15（移动端表格）、P16（后台恢复）、P17（空态去话术）、P18（工具内联）、P19（累计行 + ↑ 翻历史）、P20（上下文水位 + 构建标识），**且全部已部署**。
+- `feat/context-gauge`、`fix/background-resume` 均已并入 main（相对 main 0 个提交）。
+- `fix/scroll-anchor-stable` = P21（打开会话落点修正 + 内容分波长高的跟随）：基于 `d874a9a`，**待合并部署**。
 
-**下一步**：① 合并 `fix/background-resume`（构建标识）与 `feat/context-gauge`（水位）→ 宿主机 `docker compose up -d --build` → 跑线上复验（`/opt/data/.verify/chatlite_live/verify_live_dom.mjs` 真 DOM + `real_browser_ctx.py` 真浏览器）；② P5 Caddy basic_auth；③ 候选：工具块内跟随滚动（用户已接受"想看工具需上滚"，暂不做）、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
+**下一步**：① 合并 `fix/scroll-anchor-stable` → 宿主机 `docker compose up -d --build` → 真机上点开几个会话确认"都落到底部"（本容器已用真内核验过：距底全部 0）；② P5 Caddy basic_auth；③ 候选：服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
 > **前端真浏览器验证已不再依赖 browser-use**：本容器 browser-use 守护进程会整体卡死，改用容器内自带的 `chrome-headless-shell` + Playwright 直连（`executablePath`）跑真实内核，方法/脚本见 §10.3；卡死时别反复重试，直接走这条。
 > 现成装备（2026-09-14 备好）：内核 `/opt/hermes/.playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell`；驱动 `/opt/data/.verify/pw/bin/python`（uv venv 里装的 playwright，复用上面那个内核、不用下载）。可直接抄的脚本：`/opt/data/.verify/chatlite_live/real_browser_ctx.py`（几何/配色断言）、`verify_live_dom.mjs`（jsdom 真 DOM + 真 API）、`stub_gateway.py`（本地桩：静态产物 + `/api/model-info`→9119 + 其余→8642，绑内核分配端口并自报家门）。
@@ -1066,3 +1063,21 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 48. **★★ 逐轮 token 明细不落库，"切走再回来就没有"不是前端 bug** → Hermes 的 message 行只有 `content/role/timestamp/tool_calls…`，**`token_count` 恒空**（实测一个真实会话 300 条消息，user/assistant/tool 三类非空 0 条）。每轮那行 `⏱ 3.6s · 输入 27.3k · 缓存 …` 是客户端在轮末用**会话累计做差**算出来的（`counters()` 前后各读一次 `GET /api/sessions/{id}`），所以切走/刷新无法复原。能长期显示的只有**会话累计**（`input_tokens`/`cache_read_tokens`/`output_tokens`/`tool_call_count` 都在会话行上）→ 这也是"消息列表末尾那行会话累计"存在的唯一原因。要逐轮历史就必须让服务端落库 usage（动 Hermes 核心，按"不改 Hermes"原则不做）。
 
 49. **★ 核验脚本自身也会"假绿"：`check()` 的参数顺序写反** → 真浏览器核验脚本里 `check(ok, label, detail)` 被调用成 `check("标签", 条件, 细节)` → 第一个位置收了个非空字符串，恒真，**所有断言都过**（打印出来是 `✅ True` 才发现）。教训：① 断言助手的签名要**让写错就报类型错**（或统一成 `check(标签, 条件)`）；② 新写的核验脚本先做一次**反向自检**（把一条断言故意改成必失败，确认它真的红）再采信结果；③ 看输出时留意标签位是否是 `True/False` 这类"不该出现的东西"。
+
+50. **★★ 打开历史会话停在"半路"（v2.6 修）** → 症状：打开不同会话落点不一致，大会话停在中途（实测 21% / 44% / 50%），内容不足一屏的甚至停最上面，空会话看着"在底部"只是因为没内容。**根因不是"没贴底"，而是"贴早了 + 之后没人跟"**：拦截 `scrollTop` 赋值 + `MutationObserver` 抓到的真实时序 ——
+   ```
+   t=1408ms  列表刚插 1 个节点 → scrollHeight=601   → scrollTop := 601
+   t=1427ms  又插 1 个节点     → scrollHeight=1205  → scrollTop := 1205   ★锚定在这一刻
+   t=1449ms  +56 个节点 → 2999
+   t=1492ms  +16 个节点 → 3510
+   t=1509ms  +1 个节点  → 3554   ← 全渲染完，**再无任何滚动调用**
+   ```
+   落点 = 锚定那一刻的内容高 − 可视高。旧实现只由 `watch(tail)`（消息条数 + 最后一条正文字数）触发，而工具行/表格/字体这些"不改 tail 的长高"不会触发第二次锚定。**修法四处，缺一处就白干**：
+   ① `ResizeObserver` 盯住**整块内容容器**（`.mx-auto.max-w-chat` 那一层，必须含"加载更早"行与末尾"会话累计"行 —— 只盯列表 div 会留下恒定 44px 偏差），`stick` 时内容一变高就重贴底；
+   ② **不能只盯 scroller**：flex 布局里 scroller 自己的盒子是固定的，内容长高**不会**改变它自己的尺寸 → 一个通知都收不到（第一版就这么写的，单元测试还"绿"—— 因为我在测试里手动喂了 RO 事件；真浏览器一跑才发现修复无效）；
+   ③ 内容容器是"有消息才渲染"的（空态/加载态不存在），挂载那一刻拿不到 → `watch(ref)` 在它出现时补 `observe`（否则同样收不到通知）；
+   ④ 打开会话给一个**锚定窗口** `followUntilSettled`（每帧贴底，直到高度连续两帧不变、1.5s 兜底），"只贴一次"永远可能早于最后一波长高；同款逻辑用在「加载更早」的 scrollTop 补偿上（prepend 同样分波，原先只 `await nextTick()` 会算小差值 → 视口从顶部溜走）。
+   验证（真浏览器）：多会话落点表 **修前 距底 655~2297px → 修后全部 0**；护栏：上滚到中途后点"加载更早"（内容 +3356px）→ 距底保持 1200（**没被拽回底部**）、锚元素相对视口偏移 **Δ=0px**（视口钉住）；单测含"必须真的观察内容容器"的接线断言。
+   **两个可复用的教训**：① "DOM 分波长高"这类 bug 只能靠真浏览器 + 拦截 `scrollTop`/`MutationObserver` 抓（jsdom 不做布局，永远抓不到）；② 核验时当"锚"的元素**不能用会被重构的容器** —— prepend 会让相邻 assistant 合并、`.md-body` 的首句都变了（踩过两次），要用**叶子元素的文本指纹**去定位同一个点。
+
+51. **★ 单元测试"绿"不等于接线对** → 坑 50 的第一版修复：单测全绿，真浏览器无效。因为测试里我手动调用 RO 回调（模拟浏览器行为），而**应用代码根本没 observe 对元素** —— 测试验证的是"收到通知后逻辑对不对"，没验证"通知会不会来"。修法：给假的 `ResizeObserver` 记录 `observe()` 到的元素，断言"内容容器确实被观察到了"。**凡是"事件驱动的修复"，都要有一条断言锁住"事件源确实接上了"**，否则测试只能证明逻辑本身自洽。

@@ -1,14 +1,22 @@
 <script setup lang="ts">
 /**
  * 聊天区：消息列表 + 执行状态条 + 输入框。
- * 自动滚动策略：只有用户本来就在底部附近时才跟随，避免翻历史时被强行拽回。
+ *
+ * 自动滚动策略（v2.6 重做，坑 50）：
+ *  ① **用户在底部附近** 才跟随（`stick`）—— 翻历史时绝不把用户拽回底部；
+ *  ② 内容长高就重贴底：`ResizeObserver` 盯住消息列表与可视区，因为 DOM 是**分波**进
+ *     的（工具行几十个节点排在正文之后），只靠 `watch(tail)` 会在"内容只渲染了一部分"
+ *     时锚定，之后长出来的部分没人跟 → 落点停在半路（实测 21%~50%）；
+ *  ③ 打开会话给一个**锚定窗口**：连贴到"高度连续两帧不变"为止（`followUntilSettled`），
+ *     再交回 ① 的规则。设计口径：打开历史会话**永远落到底部（最新消息）**。
  *
  * 历史分页：首屏只取最近 100 条（Hermes 的 messages 接口一次最多 500），
  * 更早的由"加载更早的消息"按钮按 offset 翻页（offset 从最新往回数，见 §5.9）。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearBootError, loadEarlier, loadModelInfo, loadSessions, openSession, store } from '../stores/chat'
 import { formatCompactTokens, formatPercent } from '../lib/format'
+import { followUntilSettled } from '../lib/scroll-anchor'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
 import ContextGauge from './ContextGauge.vue'
@@ -18,8 +26,13 @@ import InputBox from './InputBox.vue'
 const buildId = __BUILD_ID__
 
 const scroller = ref<HTMLElement | null>(null)
+/** 消息区整块内容（含"加载更早"行与"会话累计"行）：ResizeObserver 盯它 */
+const contentRef = ref<HTMLElement | null>(null)
 const inputRef = ref<InstanceType<typeof InputBox> | null>(null)
 const stick = ref(true)
+/** 打开会话后的"锚定窗口"：期间无视 80px 阈值，内容长多少跟多少 */
+const pendingAnchor = ref(false)
+let ro: ResizeObserver | null = null
 
 /**
  * 会话累计那一行的文案（与每轮那行**同一算法**，只是不做差）：
@@ -52,6 +65,37 @@ const tail = computed(() => {
   return n * 10_000 + (store.messages[n - 1].content?.length ?? 0)
 })
 
+/** 立刻贴底（同步）。用赋值而不是 scrollTo({behavior:'smooth'})：开会话要"瞬间到位" */
+function anchorNow(): void {
+  const el = scroller.value
+  if (el) el.scrollTop = el.scrollHeight
+}
+
+/**
+ * 内容/可视区尺寸变化时的跟随。
+ * 只有"该跟随"的时候才贴：用户正在看历史（stick=false）且不在锚定窗口里 → 一律不动。
+ */
+function onResize(): void {
+  if (!stick.value && !pendingAnchor.value) return
+  anchorNow()
+}
+
+/**
+ * 打开会话：立起锚定窗口，每帧贴底，直到内容高度**连续两帧不变**（或 1.5s 兜底）。
+ * 这是修掉坑 50 的关键：DOM 分波进去时，只有"贴到稳定"才不会停在半路。
+ */
+async function anchorUntilSettled(): Promise<void> {
+  pendingAnchor.value = true
+  try {
+    await followUntilSettled(
+      () => scroller.value?.scrollHeight ?? 0,
+      () => anchorNow(),
+    )
+  } finally {
+    pendingAnchor.value = false
+  }
+}
+
 function onScroll(): void {
   const el = scroller.value
   if (!el) return
@@ -62,15 +106,18 @@ function onScroll(): void {
 
 async function toBottom(): Promise<void> {
   await nextTick()
-  const el = scroller.value
-  if (el) el.scrollTop = el.scrollHeight
+  anchorNow()
 }
 
 /**
  * 加载更早的消息：加载后把视口"钉"在原处。
+ *
  * 必须自己算，因为 prepend 会让 scrollHeight 一下变大 —— 不补偿就会出现
  * "点一下、内容跳到最上面/最下面"的错觉。同时临时关掉跟随底部（否则
  * tail 变化会触发 toBottom，把用户刚要看的历史顶走）。
+ *
+ * v2.6：prepend 进 DOM 同样是**分波**的 → 先等高度稳定再算差值，否则差值算小了、
+ * 补偿不到位（实测：手动滚到顶后加载更早，视口会留在顶部而内容已经长了一千多像素）。
  *
  * 重入由 loadEarlier() 自己兜底（historyLoading / hasMoreHistory / streaming），
  * 所以滚动事件狂发也不会重复请求；而且下面的 scrollTop 补偿会把位置推出
@@ -83,7 +130,12 @@ async function earlier(): Promise<void> {
   const prevTop = el?.scrollTop ?? 0
   stick.value = false
   await loadEarlier()
-  await nextTick()
+  // 等 prepend 的内容真正落定（onFrame 什么都不做：这一刻绝不能贴底）
+  await followUntilSettled(
+    () => scroller.value?.scrollHeight ?? 0,
+    () => {},
+    { maxMs: 1200 },
+  )
   if (el) el.scrollTop = prevTop + (el.scrollHeight - prevHeight)
 }
 
@@ -94,8 +146,10 @@ watch(tail, () => {
 watch(
   () => store.currentId,
   () => {
+    // 打开/切换会话：口径是**永远落到底部（最新消息）**
     stick.value = true
-    void toBottom()
+    anchorNow()
+    void anchorUntilSettled()
   },
 )
 
@@ -103,6 +157,28 @@ onMounted(() => {
   void toBottom()
   // 上下文窗口上限（分母）：dashboard 后端 /api/model-info，经 nginx 转发；取不到就不显示
   void loadModelInfo()
+  // 内容分波长高 / 可视区变化（手机键盘）时的跟随兜底：光靠 tail 变化不够（坑 50）
+  if (typeof ResizeObserver !== 'undefined') {
+    ro = new ResizeObserver(() => onResize())
+    // 观察两样：① scroller —— 视口变化（手机键盘弹出/收起）；
+    // ② contentRef —— **内容长高**（工具行、"加载更早"行、累计行都会在锚定之后才出现）。
+    // 只观察 scroller 是没用的：flex 布局里它的盒子固定，内容长高不会改变它自己的尺寸。
+    if (scroller.value) ro.observe(scroller.value)
+    if (contentRef.value) ro.observe(contentRef.value)
+  }
+})
+
+/**
+ * 内容块是"有消息才渲染"的 —— 空态/加载态时根本不存在，挂载那一刻可能拿不到它。
+ * 它一出现就补上观察，否则内容长高永远不会有通知（实测踩到：修复看起来生效了，其实什么都没观察）。
+ */
+watch(contentRef, (el) => {
+  if (ro && el) ro.observe(el)
+})
+
+onUnmounted(() => {
+  ro?.disconnect()
+  ro = null
 })
 
 /** 出错后重试：有会话就重载当前会话，否则重拉列表 */
@@ -165,13 +241,16 @@ function retry(): void {
         />
       </div>
 
-      <!-- 消息 -->
-      <div v-else class="mx-auto min-w-0 max-w-chat px-4 py-6">
+      <!-- 消息。ref 给 ResizeObserver：内容会**分波**长高（工具行、"加载更早"那一行、
+           末尾的"会话累计"行），只有盯住整块内容才知道要重贴底（坑 50）——
+           只盯列表 div 会漏掉后两者，实测留下恒定 44px 偏差。 -->
+      <div v-else ref="contentRef" data-testid="content" class="mx-auto min-w-0 max-w-chat px-4 py-6">
         <!-- 更早的历史：划到顶会自动加载，这个按钮是手动兜底 + 加载中提示 -->
         <!-- （内容不足一屏时不会产生滚动事件，自动加载永远等不到，只能点它） -->
         <div v-if="store.hasMoreHistory" class="mb-4 flex justify-center">
           <button
             type="button"
+            data-testid="earlier"
             class="rounded-lg border border-gray-200 px-3 py-1.5 text-xs text-gray-500 transition hover:bg-gray-50 hover:text-gray-700 disabled:opacity-60 dark:border-gray-800 dark:text-gray-400 dark:hover:bg-gray-900 dark:hover:text-gray-200"
             :disabled="store.historyLoading"
             @click="earlier()"
@@ -179,7 +258,7 @@ function retry(): void {
             {{ store.historyLoading ? '加载中…' : '加载更早的消息' }}
           </button>
         </div>
-        <div class="min-w-0 space-y-6">
+        <div ref="listRef" class="min-w-0 space-y-6">
           <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
         </div>
 

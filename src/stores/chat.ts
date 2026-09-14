@@ -144,6 +144,23 @@ export interface ToolStep {
   callId?: string
 }
 
+/**
+ * 会话**累计**计数（打开历史会话也能看到的那份）。
+ *
+ * 为什么只有累计、没有逐轮：Hermes 不把每轮的 token 用度落库 —— 实测拿一个真实会话
+ * 300 条消息，`messages.token_count` **全空**（user/assistant/tool 都是 0 条非空）。
+ * 逐轮那行统计是客户端在轮末用"会话累计做差"算出来的，所以切走/刷新后就没了；
+ * 而累计值一直存在会话行上，随时可读。
+ */
+export interface SessionTotals {
+  /** 累计【未命中缓存】的输入 */
+  inputTokens: number
+  /** 累计【命中缓存】的输入 */
+  cacheReadTokens: number
+  outputTokens: number
+  toolCalls: number
+}
+
 export const store = reactive({
   /* 连接 */
   healthOk: false,
@@ -162,6 +179,9 @@ export const store = reactive({
   rawCount: 0,
   hasMoreHistory: false,
   historyLoading: false,
+
+  /** 当前会话的累计计数（打开历史会话时由 counters() 填；拿不到就是 null → 不显示那行） */
+  totals: null as SessionTotals | null,
 
   /* 轮次状态 */
   streaming: false,
@@ -508,6 +528,8 @@ export async function openSession(
   // 分页状态必须跟着会话重置，否则会把上一个会话的 offset 用到新会话上
   store.rawCount = 0
   store.hasMoreHistory = false
+  // 累计计数也是"跟着会话走"的：不复位会把上一个会话的数字显示到新会话上
+  store.totals = null
   try {
     const res = await getMessages(id, HISTORY_PAGE, 0)
     store.messages = normalize(res.data)
@@ -522,6 +544,9 @@ export async function openSession(
   } finally {
     store.messagesLoading = false
   }
+  // 会话累计（历史会话也能看到这行；逐轮明细 Hermes 不落库，只能看累计）。
+  // 失败就保持 null → 末尾那行不显示，不编数字。
+  void counters(id)
   // v2.2：打开会话后立刻对一次账 —— 页面刷新/被杀过之后，"这一轮还在后台跑"
   // 或"已经跑完了"都要在这里认出来（否则用户只看到自己那条消息、以为丢了）。
   if (opts.resumeAfter !== false) void resumeSync()
@@ -564,6 +589,7 @@ export async function newChat(): Promise<string | null> {
     loadedIds = new Set()
     store.rawCount = 0
     store.hasMoreHistory = false
+    store.totals = null // 新会话：累计从 0 起（等第一次轮末再读真值）
     clearBootError()
     store.run.phase = 'idle'
     store.run.timeline = []
@@ -1453,13 +1479,34 @@ export async function send(text: string): Promise<void> {
 interface Counters {
   input: number
   cache: number
+  output: number
+  toolCalls: number
 }
 
-/** 读会话累计计数；失败返回 null（此时不显示缓存率，耗时与 token 照常显示） */
+/**
+ * 读会话累计计数；失败返回 null（此时不显示缓存率，耗时与 token 照常显示）。
+ *
+ * 顺手把累计写进 `store.totals`（消息列表末尾那行"会话累计"用它）：
+ * 每次轮末本来就要读一次，不额外加请求；打开历史会话时也调它一次。
+ */
 async function counters(id: string): Promise<Counters | null> {
   try {
     const s = (await getSession(id)).session
-    return { input: s.input_tokens ?? 0, cache: s.cache_read_tokens ?? 0 }
+    const c: Counters = {
+      input: s.input_tokens ?? 0,
+      cache: s.cache_read_tokens ?? 0,
+      output: s.output_tokens ?? 0,
+      toolCalls: s.tool_call_count ?? 0,
+    }
+    if (store.currentId === id) {
+      store.totals = {
+        inputTokens: c.input,
+        cacheReadTokens: c.cache,
+        outputTokens: c.output,
+        toolCalls: c.toolCalls,
+      }
+    }
+    return c
   } catch {
     return null
   }

@@ -14,6 +14,11 @@ import { checkHealth, loadSessions, resumeSync, store } from './stores/chat'
 import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
 
+// 构建时注入（见 vite.config.ts 的 define）—— 顶栏那串小字就是它：
+// "手机上是哪一版"一眼可见，不用再靠猜（踩过：手机缓存旧入口 HTML）
+const buildId = __BUILD_ID__
+const buildShort = __BUILD_SHORT__
+
 const drawer = ref(false)
 const settings = ref(false)
 
@@ -100,6 +105,9 @@ onBeforeUnmount(() => unwatchForeground?.())
         <span v-if="!store.healthOk">未连接</span>
         <span v-else-if="store.healthVersion">v{{ store.healthVersion }}</span>
         <span v-else>已连接</span>
+        <span class="text-gray-300 dark:text-gray-600" :title="`前端构建 ${buildId}`">
+          · {{ buildShort }}
+        </span>
       </span>
 
       <button
@@ -180,6 +188,7 @@ onBeforeUnmount(() => unwatchForeground?.())
           <p v-if="store.healthVersion" class="mt-1 text-xs text-gray-400 dark:text-gray-500">
             版本 v{{ store.healthVersion }} · 鉴权由反代注入
           </p>
+          <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">前端构建 {{ buildId }}</p>
         </section>
 
         <section>

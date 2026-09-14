@@ -21,6 +21,10 @@ export interface HermesSession {
   cache_read_tokens?: number // 累计【命中缓存】的输入
   cache_write_tokens?: number
   api_call_count?: number
+  /** 累计工具调用次数（消息列表末尾那行"会话累计"用它） */
+  tool_call_count?: number
+  reasoning_tokens?: number
+  estimated_cost_usd?: number | null
   preview?: string | null
   parent_session_id?: string | null
   pinned?: boolean

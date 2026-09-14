@@ -21,6 +21,80 @@ const text = ref('')
 const el = ref<HTMLTextAreaElement | null>(null)
 const composing = ref(false)
 
+/* ---------------- 历史输入：↑ / ↓（像 shell 那样翻"我说过的话"） ----------------
+ *
+ * 只翻**当前会话**里我说过的话（最新的在最后，最多取最近 20 条）：
+ *  - ↑：把上一条填进输入框，连按继续往前翻
+ *  - ↓：往回走；翻到最后一条时还原"翻历史之前正在打的那个草稿"
+ *
+ * 两个必须让路的地方（否则会抢用户的按键）：
+ *  1. **输入法合成期间**（拼音候选框也用 ↑/↓ 选字）→ 一律不拦
+ *  2. **多行草稿里光标不在首行**→ 交给 textarea 原生行为（那是在文本里上下移动光标）
+ */
+
+/** 翻历史前正在打的内容（↓ 翻到底时还回去） */
+let draft = ''
+/** 当前停在历史第几条；null = 不在翻历史 */
+const histIdx = ref<number | null>(null)
+
+const history = computed(() => {
+  const out: string[] = []
+  for (const m of store.messages) {
+    if (m.role !== 'user') continue
+    const t = m.content.trim()
+    if (t) out.push(t)
+  }
+  return out.slice(-20)
+})
+
+function setText(v: string): void {
+  text.value = v
+  void nextTick(() => {
+    autoGrow()
+    const ta = el.value
+    if (ta) {
+      const n = ta.value.length
+      ta.setSelectionRange?.(n, n) // 光标放末尾：填进来就是为了改一改再发
+    }
+  })
+}
+
+/** 光标是否在第一行（多行时 ↑ 应该移动光标，不该翻历史） */
+function onFirstLine(ta: HTMLTextAreaElement): boolean {
+  return !ta.value.slice(0, ta.selectionStart ?? 0).includes('\n')
+}
+
+/** 处理 ↑/↓；返回 true = 已消费（调用方要 preventDefault） */
+function recall(e: KeyboardEvent): boolean {
+  if (composing.value || e.isComposing) return false
+  const ta = el.value
+  const list = history.value
+  if (!ta || !list.length) return false
+
+  if (e.key === 'ArrowUp') {
+    if (text.value && !onFirstLine(ta)) return false
+    if (histIdx.value === null) draft = text.value
+    histIdx.value = histIdx.value === null ? list.length - 1 : Math.max(0, histIdx.value - 1)
+    setText(list[histIdx.value])
+    return true
+  }
+
+  if (e.key === 'ArrowDown' && histIdx.value !== null) {
+    const next = histIdx.value + 1
+    if (next >= list.length) {
+      histIdx.value = null
+      setText(draft)
+      draft = ''
+    } else {
+      histIdx.value = next
+      setText(list[next])
+    }
+    return true
+  }
+
+  return false
+}
+
 /** 工具行高度（发送按钮那一行），算最大高度时要减掉它，否则会顶出容器 */
 const TOOLBAR_PX = 40
 
@@ -37,6 +111,8 @@ function submit(): void {
   // background = 上一轮还在服务端跑（页面刚从后台回来/连接断过）：同样不许开新的
   if (!v.trim() || busy.value) return
   text.value = ''
+  histIdx.value = null // 发出去的这句成了最新历史；下次 ↑ 从它开始
+  draft = ''
   void nextTick(autoGrow)
   void send(v)
 }
@@ -50,6 +126,11 @@ function submit(): void {
 const busy = computed(() => store.streaming || store.run.phase === 'background')
 
 function onKeydown(e: KeyboardEvent): void {
+  // ↑/↓ 翻历史（像 shell）：被消费了就拦掉原生滚动/光标移动
+  if (recall(e)) {
+    e.preventDefault()
+    return
+  }
   if (e.key !== 'Enter' || e.shiftKey) return
   if (composing.value || e.isComposing) return
   e.preventDefault()
@@ -58,6 +139,7 @@ function onKeydown(e: KeyboardEvent): void {
 
 /** 供外部（示例问题）填入文本 */
 function fill(t: string): void {
+  histIdx.value = null
   text.value = t
   void nextTick(() => {
     autoGrow()

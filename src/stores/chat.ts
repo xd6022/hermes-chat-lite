@@ -19,7 +19,7 @@ import {
   streamChat,
 } from '../api/hermes'
 import { approveRun, getRun, runEvents, stopRun, submitRun } from '../api/runs'
-import { isCompactionNote } from '../lib/messages'
+import { argPreview, isCompactionNote, toolFailed } from '../lib/messages'
 // v2.2 后台/断线恢复：页面生命周期信号 + 退避间隔（见文件下半部分的 resumeSync）
 import { backoffDelay, isForeground } from '../lib/page-lifecycle'
 import { securityBlock, type SecurityBlock } from '../lib/security'
@@ -56,6 +56,11 @@ export interface UiMessage {
   srcId?: number
   /** 这是 Hermes 的上下文压缩摘要消息（内部机制，折叠显示、不参与合并） */
   compaction?: boolean
+  /**
+   * 本轮调用过的工具（内联渲染在这条回复下面，默认折叠）。
+   * 实时轮：轮末从 `store.run.timeline` 落下来；历史/刷新后：由 normalize() 配对还原。
+   */
+  tools?: ToolStep[]
 }
 
 /**
@@ -116,10 +121,44 @@ export interface ApprovalState {
   error?: string | null
 }
 
+/**
+ * 一次工具调用（内联渲染在它所属的那条回复下面）。
+ *
+ * 两个来源，前端归一化成同一个形状：
+ *  - **实时**：SSE 的 `tool.started` / `tool.completed` → 有 `preview`（服务端给的短预览），
+ *    耗时用 `tPerf`（performance.now 本地计时，不受服务端时钟影响）
+ *  - **历史 / 断线补齐**：messages API 的 `assistant.tool_calls[]` + `role=tool` 结果行
+ *    → 参数要自己从 `arguments` JSON 里取预览，耗时是两行 timestamp 相减，成败靠启发式
+ */
 export interface ToolStep {
   name: string
   preview: string
   status: 'run' | 'ok' | 'fail'
+  /** 耗时（毫秒）。实时=本地计时；历史=调用行与结果行的 timestamp 之差；拿不到就是 null */
+  ms: number | null
+  /** 历史配对：调用行的 Unix 秒（与结果行 timestamp 相减得耗时） */
+  tSec?: number
+  /** 实时配对：performance.now() 锚点（与完成时刻相减得耗时） */
+  tPerf?: number
+  /** 历史配对键：`tool_calls[].id` ↔ 结果行的 `tool_call_id` */
+  callId?: string
+}
+
+/**
+ * 会话**累计**计数（打开历史会话也能看到的那份）。
+ *
+ * 为什么只有累计、没有逐轮：Hermes 不把每轮的 token 用度落库 —— 实测拿一个真实会话
+ * 300 条消息，`messages.token_count` **全空**（user/assistant/tool 都是 0 条非空）。
+ * 逐轮那行统计是客户端在轮末用"会话累计做差"算出来的，所以切走/刷新后就没了；
+ * 而累计值一直存在会话行上，随时可读。
+ */
+export interface SessionTotals {
+  /** 累计【未命中缓存】的输入 */
+  inputTokens: number
+  /** 累计【命中缓存】的输入 */
+  cacheReadTokens: number
+  outputTokens: number
+  toolCalls: number
 }
 
 export const store = reactive({
@@ -140,6 +179,9 @@ export const store = reactive({
   rawCount: 0,
   hasMoreHistory: false,
   historyLoading: false,
+
+  /** 当前会话的累计计数（打开历史会话时由 counters() 填；拿不到就是 null → 不显示那行） */
+  totals: null as SessionTotals | null,
 
   /* 轮次状态 */
   streaming: false,
@@ -263,11 +305,15 @@ function textOf(m: HermesMessage): string {
 
 /**
  * 历史消息 → 界面消息（设计文档 3.3 / 12 章）：
- *  1. 丢掉非 user/assistant（tool / system）
- *  2. 丢掉 content 为空的 assistant（那是工具调用轮，界面不该出现空泡泡）
+ *  1. 丢掉非 user/assistant/tool（system 等）
+ *  2. 丢掉 content 为空的 assistant —— 那是工具调用轮，界面不该出现空泡泡，
+ *     但**它的 tool_calls 必须留下**（挂到本轮那条有正文的回复下面）
  *  3. content 为数组时取 text 片段拼接
  *  4. 压缩摘要消息单独标记（折叠显示，且不参与合并）
- *  5. **连续 assistant 合并成一段**
+ *  5. **连续 assistant 合并成一段**（合并时 tools 一并串接，否则工具会挂错位置）
+ *  6. 工具调用内联到"本轮产出正文的那条 assistant"下面（刷新/翻页后仍在，
+ *     与 dashboard 同一份数据来源）
+ *  7. `role=tool` 的结果行不进气泡，只用来补该次调用的成败与耗时
  *
  * 为什么必须合并：一次工具轮次里模型可能说好几段话，transcript 里就是连续多条
  * assistant。实测本会话有一条 19 条连续的 assistant（每段都是我一次工具轮次的
@@ -276,25 +322,125 @@ function textOf(m: HermesMessage): string {
  */
 export function normalize(raw: HermesMessage[]): UiMessage[] {
   const out: UiMessage[] = []
+  /** 还没归属的工具调用（本轮工具跑完了，等正文出来再一起挂上去） */
+  let pending: ToolStep[] = []
+
+  /**
+   * 把挂起的工具落到"当前这条回复"上；没有可落的目标（例如这一轮只调了工具、
+   * 正文还没落库）就单独生成一条只带工具的消息 —— 宁可多一个小块，也不丢信息。
+   */
+  const attachPending = (): void => {
+    if (!pending.length) return
+    const last = out[out.length - 1]
+    if (last && last.role === 'assistant' && !last.compaction) {
+      last.tools = [...(last.tools ?? []), ...pending]
+    } else {
+      out.push({ key: `h_tools_${pending[0].callId ?? out.length}`, role: 'assistant', content: '', tools: pending })
+    }
+    pending = []
+  }
+
   for (const m of raw) {
+    if (m.role === 'tool') {
+      pairResult(pending, m)
+      continue
+    }
     if (m.role !== 'user' && m.role !== 'assistant') continue
+
+    if (m.role === 'user') {
+      // 跨轮：先把手上的工具挂给上一条回复（否则会挂到下一个提问之后的回复上）
+      attachPending()
+      out.push({ key: `h_${m.id}`, role: 'user', content: textOf(m), srcId: m.id })
+      continue
+    }
+
+    // 先把工具收下来（即使这条 assistant 的正文是空的 —— 纯工具轮）
+    collectToolCalls(m, pending)
+
     const text = textOf(m)
     if (!text.trim()) continue
 
-    if (m.role === 'assistant' && isCompactionNote(text)) {
+    if (isCompactionNote(text)) {
+      attachPending() // 压缩边界：工具不挂到摘要上
       out.push({ key: `h_${m.id}`, role: 'assistant', content: text, srcId: m.id, compaction: true })
       continue
     }
 
+    // ⚠️ 这里**不 flush**：一条 assistant 可以同时有正文和 tool_calls，它的结果行在后头，
+    //    提前 flush 会让结果行（tool_call_id 配对）落空、变成没有参数的孤儿步骤。
+    //    统一等"跨轮"或收尾时再挂 —— 归属就是本轮那条（合并后的）回复。
     const prev = out[out.length - 1]
-    if (m.role === 'assistant' && prev && prev.role === 'assistant' && !prev.compaction) {
+    if (prev && prev.role === 'assistant' && !prev.compaction) {
       prev.content = `${prev.content}\n\n${text}`
       prev.srcId = m.id
-      continue
+    } else {
+      out.push({ key: `h_${m.id}`, role: 'assistant', content: text, srcId: m.id })
     }
-    out.push({ key: `h_${m.id}`, role: m.role, content: text, srcId: m.id })
   }
+
+  // 收尾：最后一轮可能只调了工具（正文还没落库，例如这一轮被中断）
+  attachPending()
   return out
+}
+
+/**
+ * 从一条历史 assistant 消息里收工具调用。
+ * 实测 `tool_calls` 是数组，每项 `{id, call_id, type, function:{name, arguments}}`；
+ * `arguments` 是 JSON 字符串 → 只取一行预览（完整参数点开那行再看）。
+ */
+function collectToolCalls(m: HermesMessage, pending: ToolStep[]): void {
+  if (!Array.isArray(m.tool_calls)) return
+  const ts = Number(m.timestamp)
+  for (const raw of m.tool_calls) {
+    const c = raw as { id?: unknown; call_id?: unknown; function?: { name?: unknown; arguments?: unknown } }
+    const name = c?.function?.name
+    if (typeof name !== 'string' || !name) continue
+    pending.push({
+      name,
+      preview: argPreview(c.function?.arguments),
+      status: 'run',
+      ms: null,
+      tSec: Number.isFinite(ts) ? ts : undefined,
+      callId: typeof c.id === 'string' ? c.id : typeof c.call_id === 'string' ? c.call_id : undefined,
+    })
+  }
+}
+
+/** 用结果行补上某次调用的成败与耗时（按 tool_call_id 配对） */
+function pairResult(pending: ToolStep[], m: HermesMessage): void {
+  const id = typeof m.tool_call_id === 'string' ? m.tool_call_id : undefined
+  const step = id ? pending.find((s) => s.callId && s.callId === id) : undefined
+  if (!step) {
+    // 配不上调用行（分页切片只有结果那半边，或老数据没有 tool_calls）→ 结果行自己成一步。
+    // 宁可少一个参数预览，也不把"执行过这个工具"这件事丢掉。
+    const name = typeof m.tool_name === 'string' ? m.tool_name : ''
+    if (!name) return
+    pending.push({
+      name,
+      preview: '',
+      status: toolFailed(textOf(m)) ? 'fail' : 'ok',
+      ms: null,
+    })
+    return
+  }
+  step.status = toolFailed(textOf(m)) ? 'fail' : 'ok'
+  const end = Number(m.timestamp)
+  if (typeof step.tSec === 'number' && Number.isFinite(end) && end >= step.tSec) {
+    step.ms = Math.round((end - step.tSec) * 1000)
+  }
+}
+
+/**
+ * 从一段消息里配对出工具步骤（断线补齐用：SSE 一个都没收到，但会话里已经落库了）。
+ * 与 normalize() 共用同一套配对逻辑，保证实时与历史两条路径长得一样。
+ */
+export function toolStepsOf(msgs: HermesMessage[]): ToolStep[] {
+  const pending: ToolStep[] = []
+  for (const m of msgs) {
+    if (m.role === 'assistant') collectToolCalls(m, pending)
+    else if (m.role === 'tool') pairResult(pending, m)
+  }
+  return pending
 }
 
 /** 一页历史消息的条数（服务端 messages 的 limit 上限实测是 500） */
@@ -315,6 +461,7 @@ export function prependEarlier(older: UiMessage[], current: UiMessage[]): UiMess
     !last.compaction &&
     !first.compaction
   ) {
+    const mergedTools = [...(last.tools ?? []), ...(first.tools ?? [])]
     const merged: UiMessage = {
       ...last,
       content: `${last.content}\n\n${first.content}`,
@@ -323,6 +470,8 @@ export function prependEarlier(older: UiMessage[], current: UiMessage[]): UiMess
       error: first.error ?? last.error,
       streaming: first.streaming ?? last.streaming,
       srcId: first.srcId ?? last.srcId,
+      // 分页边界上的工具也要串起来（与 normalize 内部合并同口径，否则边界处工具会丢）
+      tools: mergedTools.length ? mergedTools : undefined,
     }
     return [...older.slice(0, -1), merged, ...current.slice(1)]
   }
@@ -379,6 +528,8 @@ export async function openSession(
   // 分页状态必须跟着会话重置，否则会把上一个会话的 offset 用到新会话上
   store.rawCount = 0
   store.hasMoreHistory = false
+  // 累计计数也是"跟着会话走"的：不复位会把上一个会话的数字显示到新会话上
+  store.totals = null
   try {
     const res = await getMessages(id, HISTORY_PAGE, 0)
     store.messages = normalize(res.data)
@@ -393,6 +544,9 @@ export async function openSession(
   } finally {
     store.messagesLoading = false
   }
+  // 会话累计（历史会话也能看到这行；逐轮明细 Hermes 不落库，只能看累计）。
+  // 失败就保持 null → 末尾那行不显示，不编数字。
+  void counters(id)
   // v2.2：打开会话后立刻对一次账 —— 页面刷新/被杀过之后，"这一轮还在后台跑"
   // 或"已经跑完了"都要在这里认出来（否则用户只看到自己那条消息、以为丢了）。
   if (opts.resumeAfter !== false) void resumeSync()
@@ -435,6 +589,7 @@ export async function newChat(): Promise<string | null> {
     loadedIds = new Set()
     store.rawCount = 0
     store.hasMoreHistory = false
+    store.totals = null // 新会话：累计从 0 起（等第一次轮末再读真值）
     clearBootError()
     store.run.phase = 'idle'
     store.run.timeline = []
@@ -596,6 +751,17 @@ function toolErrored(d: unknown): boolean {
 }
 
 /**
+ * 把本轮工具**实时**同步到这条回复上（内联展示用的就是它）。
+ *
+ * 为什么不是等轮末再挂：工具是"边跑边看"的东西 —— 等这一轮全部结束才出现，
+ * 十几分钟的长任务期间界面就只剩一行"正在使用 xx…"。轮末还会再挂一次
+ * （覆盖 reconcile 从历史补齐的那份），两条路径同一形状。
+ */
+function syncToolsToMsg(ctx: TurnCtx): void {
+  if (store.run.timeline.length) ctx.asst.tools = store.run.timeline.map((s) => ({ ...s }))
+}
+
+/**
  * 事件归约器：**两条通道共用**。差异都在这一个函数里抹平 ——
  *  - 流式打字：stream 叫 `assistant.delta`，runs 叫 `message.delta`
  *  - 思考提示：stream 是伪工具 `tool.progress{tool_name:'_thinking'}`，
@@ -634,17 +800,23 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
         name: nm,
         preview: preview ?? '',
         status: 'run',
+        ms: null,
+        // 本地计时锚点：不依赖事件里的 ts（时钟/网络抖动会跳），与 RunStatus 同口径
+        tPerf: performance.now(),
       })
+      syncToolsToMsg(ctx) // 内联展示：工具一开跑就出现在这条回复下面
       break
     }
     case 'tool.completed': {
       markToolDone(toolNameOf(data), toolErrored(data) ? 'fail' : 'ok')
       store.run.phase = 'tool'
       dropResolvedApproval()
+      syncToolsToMsg(ctx) // 成败/耗时一并同步（● 变 ✓/✗ 要有秒级反馈）
       break
     }
     case 'tool.failed': {
       markToolDone(toolNameOf(data), 'fail')
+      syncToolsToMsg(ctx)
       break
     }
     case 'assistant.completed': {
@@ -786,14 +958,9 @@ async function reconcileTurn(ctx: TurnCtx, sentText: string): Promise<boolean> {
   // ② 安全闸门拦截原文（旧通道靠 run.completed.messages，新通道没这个字段）
   store.run.blocked = blockFromMessages(turn)
 
-  // ③ 工具时间线补齐（断线时 SSE 一个都没收到，但会话里已经落库了）
-  if (!store.run.timeline.length) {
-    for (const m of turn) {
-      if (m.role === 'tool' && m.tool_name) {
-        store.run.timeline.push({ name: m.tool_name, preview: '', status: 'ok' })
-      }
-    }
-  }
+  // ③ 工具调用补齐（断线时 SSE 一个都没收到，但会话里已经落库了）。
+  //    用与历史同一套配对逻辑：能一起拿到参数预览与耗时，不是只有工具名。
+  if (!store.run.timeline.length) store.run.timeline = toolStepsOf(turn)
   return true
 }
 
@@ -1144,6 +1311,8 @@ function markToolDone(name: string, status: 'ok' | 'fail'): void {
     const step = store.run.timeline[i]
     if (step.name === name && step.status === 'run') {
       step.status = status
+      // 耗时在"完成"这一侧算，与历史路径（两行 timestamp 相减）语义一致
+      step.ms = typeof step.tPerf === 'number' ? Math.round(performance.now() - step.tPerf) : null
       break
     }
   }
@@ -1287,6 +1456,10 @@ export async function send(text: string): Promise<void> {
     }
     if (store.run.phase !== 'background') store.run.endedAt = performance.now()
 
+    // 工具调用落到**本轮这条回复**下面（内联渲染，与 dashboard 同一种"跟着上下文走"）。
+    // 覆盖式同步：断线时 reconcileTurn 从历史补齐的那份也在这里统一成同一形状。
+    syncToolsToMsg(ctx)
+
     if (ctx.sawTerminal && !ctx.sawError && !ctx.cancelled) {
       // 每轮统计：耗时 / 输入 / 输出 / 缓存命中率（取本轮结束后的累计计数做差）
       const after = await counters(sid)
@@ -1306,13 +1479,34 @@ export async function send(text: string): Promise<void> {
 interface Counters {
   input: number
   cache: number
+  output: number
+  toolCalls: number
 }
 
-/** 读会话累计计数；失败返回 null（此时不显示缓存率，耗时与 token 照常显示） */
+/**
+ * 读会话累计计数；失败返回 null（此时不显示缓存率，耗时与 token 照常显示）。
+ *
+ * 顺手把累计写进 `store.totals`（消息列表末尾那行"会话累计"用它）：
+ * 每次轮末本来就要读一次，不额外加请求；打开历史会话时也调它一次。
+ */
 async function counters(id: string): Promise<Counters | null> {
   try {
     const s = (await getSession(id)).session
-    return { input: s.input_tokens ?? 0, cache: s.cache_read_tokens ?? 0 }
+    const c: Counters = {
+      input: s.input_tokens ?? 0,
+      cache: s.cache_read_tokens ?? 0,
+      output: s.output_tokens ?? 0,
+      toolCalls: s.tool_call_count ?? 0,
+    }
+    if (store.currentId === id) {
+      store.totals = {
+        inputTokens: c.input,
+        cacheReadTokens: c.cache,
+        outputTokens: c.output,
+        toolCalls: c.toolCalls,
+      }
+    }
+    return c
   } catch {
     return null
   }

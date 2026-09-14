@@ -8,6 +8,7 @@
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { clearBootError, loadEarlier, loadSessions, openSession, store } from '../stores/chat'
+import { formatPercent, formatTokens } from '../lib/format'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
 import InputBox from './InputBox.vue'
@@ -20,16 +21,29 @@ const inputRef = ref<InstanceType<typeof InputBox> | null>(null)
 const stick = ref(true)
 
 /**
+ * 会话累计那一行的文案（与每轮那行**同一算法**，只是不做差）：
+ *   输入合计 = 累计未命中缓存 + 累计命中缓存
+ *   缓存命中率 = 命中 / 输入合计
+ * 返回 null = 没有累计（请求失败/新会话）→ 那行不显示，绝不编数字。
+ */
+const totals = computed(() => {
+  const t = store.totals
+  if (!t) return null
+  const inputTotal = t.inputTokens + t.cacheReadTokens
+  const rate = inputTotal > 0 ? t.cacheReadTokens / inputTotal : null
+  return {
+    input: formatTokens(inputTotal),
+    cache: rate === null ? '—' : formatPercent(rate),
+    output: formatTokens(t.outputTokens),
+    tools: t.toolCalls,
+  }
+})
+
+/**
  * 划到顶部这个距离内就自动加载更早的历史（滚轮/触摸都一样触发）。
  * 阈值不用 0：等真的贴到 0 才开始加载，用户会先看到一个空档再蹦出新内容。
  */
 const AUTO_TOP_PX = 60
-
-const EXAMPLES = [
-  '看看 510210 现在的盘面',
-  '帮我查一下 hermes_stock 里最近的交易记录',
-  '把这段 Python 代码改成异步的',
-]
 
 const tail = computed(() => {
   const n = store.messages.length
@@ -132,17 +146,8 @@ function retry(): void {
             {{ store.currentId ? '这个会话还没有消息' : '从一个新会话开始' }}
           </p>
         </div>
-        <div v-if="!store.currentId" class="flex w-full flex-col gap-2">
-          <button
-            v-for="q in EXAMPLES"
-            :key="q"
-            type="button"
-            class="rounded-xl border border-gray-200 px-3 py-2 text-left text-sm text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-300 dark:hover:border-gray-700 dark:hover:bg-gray-900"
-            @click="inputRef?.fill(q)"
-          >
-            {{ q }}
-          </button>
-        </div>
+        <!-- 空态刻意不显示任何示例话术（自用：保持对话区干净）。
+             曾有一组写死的示例按钮（510210 盘面 / hermes_stock 交易记录 / Python 改异步），已去掉。 -->
         <!-- 构建标识：手机上一个新加载的页面就能看到"这是哪一版"（踩过缓存旧版本的坑） -->
         <p class="text-xs text-gray-300 dark:text-gray-600">{{ buildId }}</p>
       </div>
@@ -174,6 +179,20 @@ function retry(): void {
         <div class="min-w-0 space-y-6">
           <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
         </div>
+
+        <!--
+          会话累计（v2.4）：逐轮明细只在刚跑完那一轮可见（那些数字是客户端用会话累计
+          做差算出来的，Hermes 不落库 per-turn usage），所以切走/刷新后只能看累计。
+          放在列表末尾：不占常驻空间，也不跟状态条打架。
+        -->
+        <p
+          v-if="totals"
+          data-testid="session-totals"
+          class="mt-8 text-center text-[11px] leading-5 text-gray-400 dark:text-gray-500"
+        >
+          本会话累计 · 输入 {{ totals.input }}（缓存命中 {{ totals.cache }}）· 输出 {{ totals.output }} · 工具
+          {{ totals.tools }} 次
+        </p>
       </div>
     </div>
 

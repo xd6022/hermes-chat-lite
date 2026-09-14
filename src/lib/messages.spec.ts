@@ -1,5 +1,42 @@
 import { describe, expect, it } from 'vitest'
-import { isCompactionNote } from './messages'
+import { argPreview, isCompactionNote, toolFailed } from './messages'
+
+/* ---------------- 工具调用：参数预览 + 失败判据（内联渲染用） ---------------- */
+
+describe('工具参数预览 argPreview()', () => {
+  it('JSON 参数取"最像主参数"的那个键（command/路径/URL 优先）', () => {
+    expect(argPreview('{"command":"ls -la /opt/data","timeout":30}')).toBe('ls -la /opt/data')
+    expect(argPreview('{"path":"src/App.vue"}')).toBe('src/App.vue')
+    expect(argPreview('{"url":"https://example.com/a?b=1"}')).toBe('https://example.com/a?b=1')
+  })
+
+  it('超长截断、换行压成空格（历史里是整段 JSON，不能铺开占屏）', () => {
+    const out = argPreview(JSON.stringify({ command: `${'x'.repeat(120)}\nnext` }), 20)
+    expect(out).toBe(`${'x'.repeat(20)}…`)
+    expect(out).not.toContain('\n')
+  })
+
+  it('非 JSON / 空参数不炸：能显示多少显示多少', () => {
+    expect(argPreview('not json at all')).toBe('not json at all')
+    expect(argPreview(undefined)).toBe('')
+    expect(argPreview('')).toBe('')
+  })
+})
+
+describe('工具失败的启发式判据 toolFailed()', () => {
+  it('错误对象 / 异常文本算失败', () => {
+    expect(toolFailed('{"error": "No such file"}')).toBe(true)
+    expect(toolFailed('  {"detail": "Forbidden"}')).toBe(true)
+    expect(toolFailed('BLOCKED (hardline): command parser limit')).toBe(true)
+    expect(toolFailed('Traceback (most recent call last):')).toBe(true)
+  })
+
+  it('正常输出里出现 error 字样**不算**失败（判据锚在开头，这是不误报的关键）', () => {
+    expect(toolFailed('{"ok":true,"stderr":"grep: error found in log"}')).toBe(false)
+    expect(toolFailed('日志里有 3 个 error，但命令本身成功了')).toBe(false)
+    expect(toolFailed('')).toBe(false)
+  })
+})
 
 /**
  * 压缩摘要识别。用例取自 2026-09-11 从真实会话读回的原文形态

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesMessage, HermesSession } from '../api/types'
+import type { UiMessage } from './chat'
 import type * as ChatModule from './chat'
 
 /**
@@ -124,7 +125,7 @@ beforeEach(() => {
 })
 
 describe('历史消息过滤 normalize()', () => {
-  it('滤掉 tool / 空 assistant / 非文本，取多模态 text 片段', async () => {
+  it('滤掉 system/非文本；空 assistant 不进气泡，但它的工具调用要留下', async () => {
     const { normalize } = await freshModule()
     const raw = [
       { id: 1, session_id: 's', role: 'user', content: '你好', timestamp: 1 },
@@ -138,6 +139,126 @@ describe('历史消息过滤 normalize()', () => {
     const out = normalize(raw)
     expect(out.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
     expect(out.map((m) => m.content)).toEqual(['你好', '读到了', '图片说明'])
+    // tool_calls 是空对象（没有名字）→ 退回用结果行的 tool_name 成一步，信息不丢
+    expect(out[1].tools).toEqual([{ name: 'read_file', preview: '', status: 'ok', ms: null }])
+  })
+
+  it('工具按 tool_call_id 配对：成败来自结果启发式、耗时来自两行 timestamp', async () => {
+    const { normalize } = await freshModule()
+    const raw = [
+      { id: 1, session_id: 's', role: 'user', content: '看下', timestamp: 100 },
+      {
+        id: 2,
+        session_id: 's',
+        role: 'assistant',
+        content: '',
+        timestamp: 101,
+        tool_calls: [
+          { id: 'c1', function: { name: 'terminal', arguments: '{"command":"ls -la /opt/data"}' } },
+        ],
+      },
+      { id: 3, session_id: 's', role: 'tool', content: '{"ok":true}', tool_name: 'terminal', tool_call_id: 'c1', timestamp: 101.3 },
+      {
+        id: 4,
+        session_id: 's',
+        role: 'assistant',
+        content: '先看一眼',
+        timestamp: 102,
+        tool_calls: [{ id: 'c2', function: { name: 'read_file', arguments: '{"path":"a.py"}' } }],
+      },
+      { id: 5, session_id: 's', role: 'tool', content: '{"error": "No such file"}', tool_name: 'read_file', tool_call_id: 'c2', timestamp: 102.5 },
+      { id: 6, session_id: 's', role: 'assistant', content: '看完了', timestamp: 103 },
+    ] as unknown as HermesMessage[]
+
+    const out = normalize(raw)
+    expect(out.map((m) => m.content)).toEqual(['看下', '先看一眼\n\n看完了'])
+    expect(out[1].tools).toEqual([
+      { name: 'terminal', preview: 'ls -la /opt/data', status: 'ok', ms: 300, tSec: 101, callId: 'c1' },
+      { name: 'read_file', preview: 'a.py', status: 'fail', ms: 500, tSec: 102, callId: 'c2' },
+    ])
+  })
+
+  it('本轮的工具有唯一归属：都在本轮那条回复下面（只调工具没正文的最后一轮也算）', async () => {
+    const { normalize } = await freshModule()
+    const raw = [
+      { id: 1, session_id: 's', role: 'user', content: '跑一下', timestamp: 1 },
+      { id: 2, session_id: 's', role: 'assistant', content: '稍等', timestamp: 2 },
+      {
+        id: 3,
+        session_id: 's',
+        role: 'assistant',
+        content: '',
+        timestamp: 3,
+        tool_calls: [{ id: 'z1', function: { name: 'terminal', arguments: '{"command":"sleep 1"}' } }],
+      },
+      { id: 4, session_id: 's', role: 'tool', content: '{"ok":true}', tool_name: 'terminal', tool_call_id: 'z1', timestamp: 3.4 },
+    ] as unknown as HermesMessage[]
+
+    const out = normalize(raw)
+    expect(out).toHaveLength(2)
+    expect(out[1].content).toBe('稍等')
+    expect(out[1].tools?.map((t) => t.name)).toEqual(['terminal'])
+  })
+
+  it('整轮只有工具、一个字的正文都没有：单独成块而不是丢掉', async () => {
+    const { normalize } = await freshModule()
+    const raw = [
+      { id: 1, session_id: 's', role: 'user', content: '跑一下', timestamp: 1 },
+      {
+        id: 2,
+        session_id: 's',
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        tool_calls: [{ id: 'y1', function: { name: 'read_file', arguments: '{"path":"a.py"}' } }],
+      },
+      { id: 3, session_id: 's', role: 'tool', content: '{"ok":true}', tool_name: 'read_file', tool_call_id: 'y1', timestamp: 2.5 },
+    ] as unknown as HermesMessage[]
+
+    const out = normalize(raw)
+    expect(out).toHaveLength(2)
+    expect(out[1].content).toBe('')
+    expect(out[1].tools?.map((t) => t.name)).toEqual(['read_file'])
+  })
+
+  it('压缩摘要不吃工具归属（工具留在上一条回复上）', async () => {
+    const { normalize } = await freshModule()
+    const raw = [
+      { id: 1, session_id: 's', role: 'user', content: '继续', timestamp: 1 },
+      { id: 2, session_id: 's', role: 'assistant', content: '好', timestamp: 2 },
+      {
+        id: 3,
+        session_id: 's',
+        role: 'assistant',
+        content: '',
+        timestamp: 3,
+        tool_calls: [{ id: 'k1', function: { name: 'terminal', arguments: '{"command":"date"}' } }],
+      },
+      { id: 4, session_id: 's', role: 'tool', content: '{"ok":true}', tool_name: 'terminal', tool_call_id: 'k1', timestamp: 3.1 },
+      { id: 5, session_id: 's', role: 'assistant', content: '[CONTEXT COMPACTION — REFERENCE ONLY]\n长摘要', timestamp: 4 },
+    ] as unknown as HermesMessage[]
+
+    const out = normalize(raw)
+    expect(out[1].tools?.map((t) => t.name)).toEqual(['terminal'])
+    expect(out[2].compaction).toBe(true)
+    expect(out[2].tools).toBeUndefined()
+  })
+})
+
+describe('历史分页边界 prependEarlier()', () => {
+  it('边界两侧都是 assistant 时合并，tools 也一起串接（否则工具会掉进页码缝里）', async () => {
+    const { prependEarlier } = await freshModule()
+    const older: UiMessage[] = [
+      { key: 'a', role: 'assistant', content: '前半', tools: [{ name: 'x', preview: '', status: 'ok', ms: null }] },
+    ]
+    const current: UiMessage[] = [
+      { key: 'b', role: 'assistant', content: '后半', tools: [{ name: 'y', preview: '', status: 'ok', ms: null }] },
+    ]
+
+    const out = prependEarlier(older, current)
+    expect(out).toHaveLength(1)
+    expect(out[0].content).toBe('前半\n\n后半')
+    expect(out[0].tools?.map((t) => t.name)).toEqual(['x', 'y'])
   })
 })
 
@@ -153,13 +274,19 @@ describe('流式发送 send()', () => {
     expect(mod.store.messages[1].streaming).toBe(false)
   })
 
-  it('工具事件进时间线，run.completed 才判定完成', async () => {
+  it('工具事件进时间线并内联挂到本轮回复上，run.completed 才判定完成', async () => {
     const mod = await freshModule()
     await mod.send('hi')
 
     expect(mod.store.run.phase).toBe('done')
     expect(mod.store.run.endedAt).toBeGreaterThan(0)
-    expect(mod.store.run.timeline).toEqual([
+    expect(mod.store.run.timeline).toMatchObject([
+      { name: 'read_file', preview: 'package.json', status: 'ok' },
+    ])
+    // 耗时是本地计时算出来的（不依赖事件里的 ts）
+    expect(typeof mod.store.run.timeline[0].ms).toBe('number')
+    // ★ 内联展示：工具挂在本轮那条回复下面（v2.3 起的展示位置）
+    expect(mod.store.messages[1].tools).toMatchObject([
       { name: 'read_file', preview: 'package.json', status: 'ok' },
     ])
     expect(mod.store.streaming).toBe(false)

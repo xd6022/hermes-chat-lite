@@ -17,8 +17,8 @@ import { formatDurationMs, formatPercent, formatTokens } from '../lib/format'
 
 const props = defineProps<{ msg: UiMessage }>()
 
-/** 工具块的展开态：**默认折叠**（工具是过程信息，不该抢正文的位置） */
-const toolsOpen = ref(false)
+/** 工具块的展开态：**默认展开**（用户要用它确认"会话确实在工作"；只有排查问题时才逐条看） */
+const toolsOpen = ref(true)
 
 function toolMarker(s: ToolStep['status']): string {
   return s === 'run' ? '●' : s === 'ok' ? '✓' : '✗'
@@ -119,14 +119,16 @@ onBeforeUnmount(() => {
 
   <!-- 助手消息：文本流，不用气泡 -->
   <div v-else class="group min-w-0 max-w-full">
-    <div ref="bodyRef" class="md-body" v-html="html" />
-
     <!--
-      本轮的模型执行过程（工具调用）：跟着上下文走 —— 挂在触发它的这条回复下面。
-      默认折叠；展开后一行一个工具：标记 + 工具名 + 参数预览 + 耗时。
-      字体比正文浅一档（过程信息不抢注意力），等宽字体便于对齐扫读。
+      本轮的模型执行过程（工具调用）：**放在正文前面**。
+      顺序依据：Hermes 落库本身就是「assistant(tool_calls) → tool 结果 → assistant(正文)」，
+      所以"工具在前、正文在后"才是时间顺序的原样，与 dashboard/TUI 的读法一致。
+      默认展开：用它确认"这一轮确实在工作"（例如 MCP 更新后是否被触发）；
+      要逐条细看工具时才是排查场景。字体比正文浅一档（过程信息不抢注意力）、等宽便于扫读。
+
+      注意：展开态是**每条消息各自的局部状态**（不是全局开关）。
     -->
-    <div v-if="msg.tools?.length" class="mt-2 text-xs" data-testid="tools-block">
+    <div v-if="msg.tools?.length" class="mb-2 text-xs" data-testid="tools-block">
       <button
         type="button"
         class="flex cursor-pointer select-none items-center gap-1 text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
@@ -153,6 +155,8 @@ onBeforeUnmount(() => {
         </li>
       </ol>
     </div>
+
+    <div ref="bodyRef" class="md-body" v-html="html" />
 
     <!-- 每轮统计：耗时 / 输入 / 输出 / 缓存命中率 -->
     <p

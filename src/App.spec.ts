@@ -56,15 +56,19 @@ beforeEach(() => {
 })
 
 describe('App 集成', () => {
-  it('渲染顶栏（Hermes + 版本）与空态', async () => {
+  it('渲染顶栏（Hermes + 服务端版本 + 前端构建标识）与空态', async () => {
     const w = mount(App)
     await flushPromises()
 
     const header = w.find('header').text()
     expect(header).toContain('Hermes')
     expect(header).toContain('v0.20.4') // 来自 /health
+    // 前端构建标识（vite define 注入）：真机上"到底是哪一版"靠它一眼确认
+    expect(header).toContain(__BUILD_SHORT__)
     expect(w.find('textarea').exists()).toBe(true)
     expect(w.text()).toContain('有什么可以帮您？')
+    // 空态底部也放了一份完整形态
+    expect(w.text()).toContain(__BUILD_ID__)
   })
 
   it('空态不显示任何示例话术（自用：保持对话区干净）', async () => {

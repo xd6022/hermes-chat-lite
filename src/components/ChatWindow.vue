@@ -14,6 +14,9 @@ import RunStatus from './RunStatus.vue'
 import ContextGauge from './ContextGauge.vue'
 import InputBox from './InputBox.vue'
 
+// 构建时注入（vite.config.ts 的 define）：空态底部显示，方便真机一眼确认版本
+const buildId = __BUILD_ID__
+
 const scroller = ref<HTMLElement | null>(null)
 const inputRef = ref<InstanceType<typeof InputBox> | null>(null)
 const stick = ref(true)
@@ -148,6 +151,8 @@ function retry(): void {
         </div>
         <!-- 空态刻意不显示任何示例话术（自用：保持对话区干净）。
              曾有一组写死的示例按钮（510210 盘面 / hermes_stock 交易记录 / Python 改异步），已去掉。 -->
+        <!-- 构建标识：手机上一个新加载的页面就能看到"这是哪一版"（踩过缓存旧版本的坑） -->
+        <p class="text-xs text-gray-300 dark:text-gray-600">{{ buildId }}</p>
       </div>
 
       <!-- 加载态 -->

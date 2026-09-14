@@ -44,7 +44,11 @@
 **分支现状**（2026-09-14 收口后）：
 - `main` = `daa03e6`，已含 P15（移动端表格）、P16（后台恢复）、P17（空态去话术）、P18（工具内联）、P19（累计行 + ↑ 翻历史），且**已部署到线上**。
 - `fix/background-resume` = `a6a40d8`：`b5961c8`（v2.2.4 前端构建标识）+ 一个**合并提交**（把 main 并进来、解决 `ChatWindow.vue` 空态那处冲突：**保留构建标识、仍然不要示例话术**）。合并干跑零冲突、合并后 195 passed → **等用户合并进 main**。
-- `feat/context-gauge` = P20（上下文水位）：基于 `origin/main`，含 `nginx.conf` 改动 → 合并后**必须重新 build 部署**才会生效。
+- `feat/context-gauge` = `16d5635`（P20 上下文水位）+ **已把 `fix/background-resume` 并进来**（合并提交，`docs/detailed-design.md` 的坑清单处有冲突：坑 46 的"配套/判据"两行 vs 本支新增的坑 47-49，解决口径=**两边都保留，坑 46 在前**）。所以：
+  - 想只要构建标识 → 合 `fix/background-resume`；
+  - 想连水位一起 → 合 `feat/context-gauge`（它已含前者，**不会再冲突**）；
+  - **两种顺序都不会冲突**（合并前已用 `git merge-tree` + 真合并干跑验证）。
+  含 `nginx.conf` 改动 → 合并后**必须重新 build 部署**才生效。
 
 **下一步**：① 合并 `fix/background-resume`（构建标识）与 `feat/context-gauge`（水位）→ 宿主机 `docker compose up -d --build` → 跑线上复验（`/opt/data/.verify/chatlite_live/verify_live_dom.mjs` 真 DOM + `real_browser_ctx.py` 真浏览器）；② P5 Caddy basic_auth；③ 候选：工具块内跟随滚动（用户已接受"想看工具需上滚"，暂不做）、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
@@ -1050,6 +1054,8 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 44. **★★ 别把"连接断了"当成"任务没了"** → 手机切后台会把 SSE 掐掉，老实现只在 `send()` 的 `finally` 里做轮末对账 → **页面被冻结/回收时那段代码根本不跑**，界面停在"正在思考…"或误报"回复中断"。要点：① `runs` 通道下 **run 是服务端自己的任务**（实测无人订阅也照跑完、客户端掐断仍然 `completed`），所以断开**不代表**取消，只有 `POST /stop` 才是取消；② 事件流**不可重连/不可重放**（断开后重连拿不到任何数据）→ 恢复只能靠 `GET /v1/runs/{id}` 判状态 + `GET /api/sessions/{id}/messages` 回读对账（**别去设计"重连 SSE 补事件"**）；③ 前端状态必须记在**页面之外**（`localStorage` 存 `{sessionId, runId, sentText, startedAt}`），否则刷新/被回收后整个人失忆；**别用 `sessionStorage`**（扛不住标签页被回收重建，见坑 45）；④ 相位要区分 `background`（服务端还在跑，等同步）与 `aborted`（确实结束了），断流顺带留下的红字要**清掉**，否则"连接断"会被读成"这一轮失败"；⑤ 恢复动作挂在 `visibilitychange`/`focus`/`pageshow`/`online` 上（**不要用 `setInterval` 保活**：后台定时器会被 throttle，白费电还不可靠）；⑥ 退避 1s→2s→…→30s 封顶，页面不可见时**不轮询**（回到前台再接手）。实测数字与三层证据（真 API / 真链路 e2e / 真浏览器）见 §10.4。
 45. **★★ 记"未完成的轮次"要用 `localStorage`，不是 `sessionStorage`**（v2.2.2 真机纠正）→ 两者都扛得住"刷新"，但**安卓/iOS 把标签页整个回收后重建时 `sessionStorage` 是空的** —— 于是前端完全不知道有 run 在跑：不会显示"任务仍在后台执行"，也不会自动同步，用户只看到自己那条孤零零的消息（真机 14:13 那轮实测如此；日志特征=同一会话在几秒内出现多次 App 挂载）。改用 `localStorage` 后，配合**开机/刷新时"有未完成的记录就自动打开它所属会话"**（否则用户面对空态根本不知道要点一下）即可闭环。代价：同设备多标签页共享这条记录 —— 语义上没错（那一轮确实在跑），代码只处理当前会话、终态即清、6h 自动作废；记录指向的会话若已被删除则清掉记录。验证用 `storageState` 造"杀掉标签页再重开"（浏览器用例 S7，见 §10.4），**别只用 `page.reload()`** —— 那只覆盖"刷新"，覆盖不到"上下文被重建"。
 46. **★★ 手机上"刷了好几次还是老版本" = 入口 HTML 被缓存**（v2.2.3）→ 症状：服务端镜像早换了新产物（旧 `index-*.js` 在容器里已经 404），手机上刷新、杀进程重开都还是旧界面。根因：`location /` 里**没给 `index.html` 任何 `Cache-Control`**（只有 `ETag`/`Last-Modified`），浏览器于是按 `Last-Modified` 做"启发式缓存"，自带 webview 缓存/云加速的国产浏览器更激进；而 `/assets/`（带 hash）那边是 `max-age=604800, immutable`（**这是对的，别动**）→ "旧 HTML + 旧 hash 资源"这套组合被一直用下去，链子断在第一环。修法：`location = /index.html` 里 `Cache-Control: no-store, no-cache, must-revalidate` + `Pragma: no-cache` + `etag off` + `if_modified_since off`（这份 HTML 才 1.5KB，不值得为它省一次请求）；带 hash 的资源保持长缓存 —— 只要入口 HTML 每次是新的，新 HTML 自然会带出新的 hash 文件名。真机上想**立刻绕过**：地址后面加个查询串（`?v=2` —— 缓存按完整 URL 存，必然重新拉 HTML），或开无痕标签页/清该站点缓存。改完若**仍然**被缓存，那说明是浏览器自带的"云加速/极速模式"在缓存（关掉它或换浏览器）；判据是先 `curl -I` 确认入口 HTML 真的带上了 `no-store`。
+    **配套**：界面顶部会显示**前端构建标识**（`vite.config.ts` 构建时自动生成：本机构建是"短 sha · 北京时间"，Docker 镜像里没有 `.git` 所以只有时刻；顶栏放紧凑形态，设置面板"连接"与空态底部放完整形态）—— 部署完打开手机对一眼就知道有没有吃到新版，不用再靠猜。
+    **判据**：入口 HTML 响应里应能看到 `Cache-Control: no-store, no-cache, must-revalidate`（`wget -S` 或浏览器 devtools）。
 
 47. **★★ 上下文水位三个数字在三个地方，只有一个前端能直接读到（v2.5）** → 想复刻 dashboard 状态栏的 `deepseek-flash │ 407.7k/1m │ [████░░░░░░] 41%`，先弄清三份数据：
    - **分母（窗口上限，`/1m`）**：只在 **dashboard 后端** —— `hermes_cli/web_server.py` 的 `GET /api/model/info`（容器 **9119**），返回 `effective_context_length`（config 的 `model.context_length` 优先，否则 `agent.model_metadata.get_model_context_length()`）。**API server（8642）完全没有 context 字段**（实测：`/v1/capabilities`、`/api/model/options`、`/health/detailed`、`/api/sessions/{id}` 全无）→ 必须在 nginx 单独加 `location = /api/model-info` 转发到 9119；**不能并进 `/api` 那条**（会打到 8642 变 404）。路径特意叫 `/api/model-info`（不是后端的 `/api/model/info`），避免与 API server 的 `/api/...` 命名空间混淆。

@@ -201,9 +201,11 @@ describe('/v1/runs 通道：基本链路', () => {
     const mod = await freshRuns()
     await mod.send('hi')
 
-    expect(mod.store.run.timeline).toEqual([
+    expect(mod.store.run.timeline).toMatchObject([
       { name: 'terminal', preview: 'echo hi', status: 'fail' },
     ])
+    // 内联展示同样要有（失败的工具在这条回复下面显示 ✗）
+    expect(mod.store.messages[1].tools).toMatchObject([{ name: 'terminal', status: 'fail' }])
   })
 
   it('真实帧形态：没有 event: 行、事件名在 JSON 的 event 字段里（真链路实测踩到的坑）', async () => {
@@ -241,7 +243,14 @@ describe('/v1/runs 通道：轮末回读对账', () => {
     await mod.send('hi')
 
     expect(mod.store.messages[1].content).toBe('让我查一下\n\n答案是 42')
-    expect(mod.store.run.timeline).toEqual([{ name: 'read_file', preview: '', status: 'ok' }])
+    // 断线补齐/轮末对账：找回的那份也要长成同一形状（有预览、有成败、耗时拿不到就是 null）
+    // 注意这一轮 SSE 收到过 tool.started，所以时间线保留实时那份（有本地耗时），不覆盖成历史版
+    expect(mod.store.run.timeline).toMatchObject([
+      { name: 'read_file', preview: '', status: 'ok' },
+    ])
+    expect(typeof mod.store.run.timeline[0].ms).toBe('number')
+    // 并且已经内联挂到本轮这条回复上
+    expect(mod.store.messages[1].tools?.map((t) => t.name)).toEqual(['read_file'])
   })
 
   it('安全闸门原文从 transcript 捞（runs 通道没有 run.completed.messages）', async () => {

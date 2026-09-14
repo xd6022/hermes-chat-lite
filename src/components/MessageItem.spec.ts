@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import MessageItem from './MessageItem.vue'
-import type { UiMessage } from '../stores/chat'
+import type { ToolStep, UiMessage } from '../stores/chat'
 
 const WIDE_TABLE = [
   '| 日期 | 开盘 | 收盘 | 最高 | 最低 | 成交量 | 成交额 | 涨跌幅 | 换手率 | 市值 |',
@@ -70,5 +70,66 @@ describe('MessageItem：超宽表格的 DOM 结构', () => {
   it('压缩摘要里的表格同样有 wrapper（隐藏分支不能漏）', async () => {
     const wrapper = await render(ui({ compaction: true, content: WIDE_TABLE }))
     expect(wrapper.find('details .md-body > .table-wrapper').exists()).toBe(true)
+  })
+})
+
+/**
+ * 本轮工具调用（v2.3）：内联在这条回复下面、默认折叠。
+ * 结构与标记在这一层锁住；颜色深浅属于肉眼观感，交给真浏览器用例。
+ */
+describe('MessageItem：本轮工具调用块', () => {
+  const TOOLS: ToolStep[] = [
+    { name: 'terminal', preview: 'ls -la /opt/data', status: 'ok', ms: 320 },
+    { name: 'read_file', preview: 'a.py', status: 'fail', ms: 1500 },
+  ]
+
+  /** 等 markdown 渲染落地（不能用上面那个只认表格的 helper；用户消息没有 .md-body） */
+  async function renderText(item: UiMessage) {
+    const wrapper = mount(MessageItem, { props: { msg: item } })
+    if (item.role === 'assistant' && item.content) {
+      await vi.waitFor(() => {
+        if (!wrapper.find('.md-body').text().includes(item.content)) throw new Error('markdown 还没渲染完')
+      })
+    }
+    return wrapper
+  }
+
+  it('默认折叠：只显示「工具调用 (N)」，不铺明细', async () => {
+    const wrapper = await renderText(ui({ content: '看完了', tools: TOOLS }))
+    expect(wrapper.find('[data-testid="tools-block"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="tools-toggle"]').text()).toContain('工具调用 (2)')
+    expect(wrapper.find('[data-testid="tools-toggle"]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('[data-testid="tools-list"]').exists()).toBe(false)
+  })
+
+  it('展开后一行一个：标记 + 工具名 + 参数预览 + 耗时', async () => {
+    const wrapper = await renderText(ui({ content: '看完了', tools: TOOLS }))
+    await wrapper.find('[data-testid="tools-toggle"]').trigger('click')
+
+    const rows = wrapper.findAll('[data-testid="tools-list"] li')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain('✓') // 成功
+    expect(rows[0].text()).toContain('terminal')
+    expect(rows[0].text()).toContain('"ls -la /opt/data"')
+    expect(rows[0].text()).toContain('(0.3s)')
+    expect(rows[1].text()).toContain('✗') // 失败
+    expect(rows[1].text()).toContain('(1.5s)')
+  })
+
+  it('运行中的工具用 ●，且没有耗时就不显示括号', async () => {
+    const wrapper = await renderText(
+      ui({ content: '跑着呢', tools: [{ name: 'terminal', preview: 'sleep 30', status: 'run', ms: null }] }),
+    )
+    await wrapper.find('[data-testid="tools-toggle"]').trigger('click')
+    const list = wrapper.find('[data-testid="tools-list"]').text()
+    expect(list).toContain('●')
+    expect(list).not.toContain('(')
+  })
+
+  it('没有工具的消息不出现这个块（用户消息 / 纯文本回复都不出）', async () => {
+    expect((await renderText(ui({ content: '你好' }))).find('[data-testid="tools-block"]').exists()).toBe(false)
+    expect(
+      (await renderText(ui({ role: 'user', content: '你好' }))).find('[data-testid="tools-block"]').exists(),
+    ).toBe(false)
   })
 })

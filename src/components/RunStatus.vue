@@ -10,7 +10,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { respondApproval, store } from '../stores/chat'
 import type { ApprovalChoice } from '../api/types'
 
-const showTimeline = ref(false)
 const tick = ref(0)
 let timer: number | undefined
 /** 审批回话进行中（防重复点击） */
@@ -42,7 +41,11 @@ const active = computed(() =>
   store.streaming,
 )
 
-const toolCount = computed(() => store.run.timeline.length)
+/*
+ * 工具调用**不再在这里列**（v2.3）：内联渲染在它所属的那条回复下面（见 MessageItem
+ * 的"工具调用"折叠块）。这里只负责"现在在干什么 / 这一轮结束了没"。
+ * 两处都列 = 同一条信息两副面孔，而且多轮之后看不出工具属于哪一轮。
+ */
 
 /** 审批卡片：服务端给的可选项里有没有这一项 */
 function has(c: ApprovalChoice): boolean {
@@ -128,15 +131,6 @@ const tone = computed(() => {
       <span v-if="active" class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
       <span class="truncate" :title="store.run.toolPreview ?? ''">{{ label }}</span>
       <span v-if="active" class="tabular-nums text-gray-400 dark:text-gray-500">{{ secs }}</span>
-
-      <button
-        v-if="toolCount > 0"
-        type="button"
-        class="ml-auto shrink-0 rounded px-1.5 py-0.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
-        @click="showTimeline = !showTimeline"
-      >
-        {{ showTimeline ? '收起' : `工具 ${toolCount}` }}
-      </button>
     </div>
 
     <!-- 安全闸门拦截说明：网页端没有审批通道，工具被拒时得说清"为什么"（否则只看到一个 ✗） -->
@@ -226,23 +220,5 @@ const tone = computed(() => {
         {{ store.run.approval.error }}
       </p>
     </div>
-
-    <!-- 工具时间线：本轮到底干了什么（Open WebUI 缺的就是这块） -->
-    <ol
-      v-if="showTimeline && toolCount > 0"
-      class="mt-1 space-y-0.5 border-l border-gray-200 pl-3 dark:border-gray-700"
-    >
-      <li
-        v-for="(s, i) in store.run.timeline"
-        :key="i"
-        class="flex items-baseline gap-1.5 text-xs text-gray-500 dark:text-gray-400"
-      >
-        <span class="w-3 shrink-0 text-center">
-          {{ s.status === 'run' ? '·' : s.status === 'ok' ? '✓' : '✗' }}
-        </span>
-        <span class="shrink-0 font-mono text-gray-600 dark:text-gray-300">{{ s.name }}</span>
-        <span class="truncate" :title="s.preview">{{ s.preview }}</span>
-      </li>
-    </ol>
   </div>
 </template>

@@ -22,12 +22,6 @@ const stick = ref(true)
  */
 const AUTO_TOP_PX = 60
 
-const EXAMPLES = [
-  '看看 510210 现在的盘面',
-  '帮我查一下 hermes_stock 里最近的交易记录',
-  '把这段 Python 代码改成异步的',
-]
-
 const tail = computed(() => {
   const n = store.messages.length
   if (!n) return 0
@@ -129,17 +123,8 @@ function retry(): void {
             {{ store.currentId ? '这个会话还没有消息' : '从一个新会话开始' }}
           </p>
         </div>
-        <div v-if="!store.currentId" class="flex w-full flex-col gap-2">
-          <button
-            v-for="q in EXAMPLES"
-            :key="q"
-            type="button"
-            class="rounded-xl border border-gray-200 px-3 py-2 text-left text-sm text-gray-600 transition hover:border-gray-300 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-300 dark:hover:border-gray-700 dark:hover:bg-gray-900"
-            @click="inputRef?.fill(q)"
-          >
-            {{ q }}
-          </button>
-        </div>
+        <!-- 空态刻意不显示任何示例话术（自用：保持对话区干净）。
+             曾有一组写死的示例按钮（510210 盘面 / hermes_stock 交易记录 / Python 改异步），已去掉。 -->
       </div>
 
       <!-- 加载态 -->

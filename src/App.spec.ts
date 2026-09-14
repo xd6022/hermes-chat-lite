@@ -67,6 +67,19 @@ describe('App 集成', () => {
     expect(w.text()).toContain('有什么可以帮您？')
   })
 
+  it('空态不显示任何示例话术（自用：保持对话区干净）', async () => {
+    const w = mount(App)
+    await flushPromises()
+
+    // 曾经这里写死过一组示例按钮（看看 510210 现在的盘面 / hermes_stock 交易记录 / Python 改异步）
+    const scroller = w.find('[data-testid="scroller"]')
+    expect(scroller.exists()).toBe(true)
+    expect(scroller.text()).not.toContain('510210')
+    expect(scroller.text()).not.toContain('把这段 Python')
+    // 空态里不应再有任何可点话术按钮
+    expect(scroller.find('button').exists()).toBe(false)
+  })
+
   it('侧栏渲染真实会话标题与日期分组', async () => {
     const w = mount(App)
     await flushPromises()

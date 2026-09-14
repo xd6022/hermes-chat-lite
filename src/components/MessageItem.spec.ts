@@ -94,17 +94,31 @@ describe('MessageItem：本轮工具调用块', () => {
     return wrapper
   }
 
-  it('默认折叠：只显示「工具调用 (N)」，不铺明细', async () => {
+  it('默认展开：直接看到明细；再点一下收起', async () => {
     const wrapper = await renderText(ui({ content: '看完了', tools: TOOLS }))
     expect(wrapper.find('[data-testid="tools-block"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="tools-toggle"]').text()).toContain('工具调用 (2)')
-    expect(wrapper.find('[data-testid="tools-toggle"]').attributes('aria-expanded')).toBe('false')
+    expect(wrapper.find('[data-testid="tools-toggle"]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[data-testid="tools-list"]').exists()).toBe(true)
+
+    // 收起 / 再展开
+    await wrapper.find('[data-testid="tools-toggle"]').trigger('click')
     expect(wrapper.find('[data-testid="tools-list"]').exists()).toBe(false)
+    await wrapper.find('[data-testid="tools-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="tools-list"]').exists()).toBe(true)
+  })
+
+  it('★ 工具块在正文**之前**（时间顺序的原样：先跑工具、再出正文）', async () => {
+    const wrapper = await renderText(ui({ content: '看完了', tools: TOOLS }))
+    const children = Array.from(wrapper.find('.group').element.children)
+    const idxTools = children.findIndex((el) => el.getAttribute('data-testid') === 'tools-block')
+    const idxBody = children.findIndex((el) => el.classList.contains('md-body'))
+    expect(idxTools).toBeGreaterThanOrEqual(0)
+    expect(idxBody).toBeGreaterThan(idxTools)
   })
 
   it('展开后一行一个：标记 + 工具名 + 参数预览 + 耗时', async () => {
     const wrapper = await renderText(ui({ content: '看完了', tools: TOOLS }))
-    await wrapper.find('[data-testid="tools-toggle"]').trigger('click')
 
     const rows = wrapper.findAll('[data-testid="tools-list"] li')
     expect(rows).toHaveLength(2)
@@ -120,7 +134,6 @@ describe('MessageItem：本轮工具调用块', () => {
     const wrapper = await renderText(
       ui({ content: '跑着呢', tools: [{ name: 'terminal', preview: 'sleep 30', status: 'run', ms: null }] }),
     )
-    await wrapper.find('[data-testid="tools-toggle"]').trigger('click')
     const list = wrapper.find('[data-testid="tools-list"]').text()
     expect(list).toContain('●')
     expect(list).not.toContain('(')

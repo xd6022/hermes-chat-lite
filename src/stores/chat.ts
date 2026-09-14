@@ -11,6 +11,7 @@ import {
   createSession,
   deleteSession as deleteSessionApi,
   getMessages,
+  getModelInfo,
   getSession,
   getSessions,
   health,
@@ -20,6 +21,7 @@ import {
 } from '../api/hermes'
 import { approveRun, getRun, runEvents, stopRun, submitRun } from '../api/runs'
 import { argPreview, isCompactionNote, toolFailed } from '../lib/messages'
+import { readContextUse, writeContextUse } from '../lib/context-cache'
 // v2.2 后台/断线恢复：页面生命周期信号 + 退避间隔（见文件下半部分的 resumeSync）
 import { backoffDelay, isForeground } from '../lib/page-lifecycle'
 import { securityBlock, type SecurityBlock } from '../lib/security'
@@ -182,6 +184,26 @@ export const store = reactive({
 
   /** 当前会话的累计计数（打开历史会话时由 counters() 填；拿不到就是 null → 不显示那行） */
   totals: null as SessionTotals | null,
+
+  /**
+   * 模型 + 上下文水位（输入框上方那一行）。
+   *
+   * 三个数字三个来源，缺哪个就少显示哪段（绝不编数字）：
+   *  - model：会话行（session.model）
+   *  - limit：dashboard 后端 `/api/model-info` 的 effective_context_length（= 状态栏的 `/1m`）
+   *  - used ：本轮最后一次调用的 `usage.input_tokens`（= dashboard 的 last_prompt_tokens）
+   *
+   * ⚠️ `used` 只有跑完一轮才知道（Hermes 不落库）→ 刷新/切走后从本地缓存恢复并标 `stale`。
+   */
+  context: {
+    model: null as string | null,
+    limit: null as number | null,
+    used: null as number | null,
+    /** used 是"上次已知"（本地缓存恢复的），不是刚跑完的实时值 */
+    stale: false,
+    /** 上次已知值的记录时刻（毫秒；0 = 没有） */
+    at: 0,
+  },
 
   /* 轮次状态 */
   streaming: false,
@@ -530,6 +552,14 @@ export async function openSession(
   store.hasMoreHistory = false
   // 累计计数也是"跟着会话走"的：不复位会把上一个会话的数字显示到新会话上
   store.totals = null
+  // 上下文水位同理；再试着从本地缓存恢复"上次已知"（Hermes 不落库占用值，ⓐ 口径）
+  resetContextUse()
+  const cachedUse = readContextUse(id)
+  if (cachedUse) {
+    store.context.used = cachedUse.used
+    store.context.stale = true
+    store.context.at = cachedUse.at
+  }
   try {
     const res = await getMessages(id, HISTORY_PAGE, 0)
     store.messages = normalize(res.data)
@@ -547,6 +577,8 @@ export async function openSession(
   // 会话累计（历史会话也能看到这行；逐轮明细 Hermes 不落库，只能看累计）。
   // 失败就保持 null → 末尾那行不显示，不编数字。
   void counters(id)
+  // 上下文窗口上限（同一个"跟着会话走"的诉求；接口在 dashboard 后端，取不到就不显示分母）
+  void loadModelInfo()
   // v2.2：打开会话后立刻对一次账 —— 页面刷新/被杀过之后，"这一轮还在后台跑"
   // 或"已经跑完了"都要在这里认出来（否则用户只看到自己那条消息、以为丢了）。
   if (opts.resumeAfter !== false) void resumeSync()
@@ -590,6 +622,7 @@ export async function newChat(): Promise<string | null> {
     store.rawCount = 0
     store.hasMoreHistory = false
     store.totals = null // 新会话：累计从 0 起（等第一次轮末再读真值）
+    resetContextUse() // 新会话没有"上次已知"的占用，等第一轮跑完才有
     clearBootError()
     store.run.phase = 'idle'
     store.run.timeline = []
@@ -1471,6 +1504,9 @@ export async function send(text: string): Promise<void> {
       })
     }
 
+    // 上下文水位：本轮最后一次调用的 input_tokens = 当前占用（与 dashboard 状态栏同义）
+    rememberContextUse(sid, ctx.usage)
+
     // 新会话首轮结束后 Hermes 才会生成标题，刷新侧栏才能看到
     void loadSessions()
   }
@@ -1505,11 +1541,55 @@ async function counters(id: string): Promise<Counters | null> {
         outputTokens: c.output,
         toolCalls: c.toolCalls,
       }
+      // 模型名顺手带上（会话行里就有，不用额外请求）
+      if (s.model) store.context.model = s.model
     }
     return c
   } catch {
     return null
   }
+}
+
+/**
+ * 读「上下文窗口上限」（输入框上方那行的分母）。
+ *
+ * ⚠️ 接口在 dashboard 后端（容器 9119），不在 API server 上 —— 由 nginx 的
+ * `location = /api/model-info` 转发（见 nginx.conf）。取不到就保持 null：
+ * 界面不显示分母，也不编数字（没配转发 / 后端改名 / 网络故障都走这条路）。
+ */
+export async function loadModelInfo(): Promise<void> {
+  const info = await getModelInfo()
+  if (!info) return
+  const limit =
+    Number(info.effective_context_length ?? 0) || Number(info.capabilities?.context_window ?? 0) || 0
+  if (limit > 0) store.context.limit = limit
+  // 会话级模型优先（本项目没有模型切换 UI，通常与主模型一致）
+  if (!store.context.model && typeof info.model === 'string' && info.model) {
+    store.context.model = info.model
+  }
+}
+
+/**
+ * 记下本轮结束时的上下文占用。
+ *
+ * 用**最后一次调用的 input_tokens**：它就是"这一次请求把多少上下文喂给了模型"，
+ * 与 dashboard 状态栏显示的 `last_prompt_tokens` 同义。顺带存进本地缓存，
+ * 好让刷新/切走之后还能看到"上次已知"（ⓐ 口径）。
+ */
+function rememberContextUse(sid: string | null, usage: HermesUsage | null): void {
+  const used = Number(usage?.input_tokens ?? 0)
+  if (!Number.isFinite(used) || used <= 0) return
+  store.context.used = used
+  store.context.stale = false
+  store.context.at = Date.now()
+  if (sid) writeContextUse(sid, used, store.context.at)
+}
+
+/** 切会话 / 新会话时复位水位（占用是会话级的，不串台） */
+function resetContextUse(): void {
+  store.context.used = null
+  store.context.stale = false
+  store.context.at = 0
 }
 
 function buildStats(args: {

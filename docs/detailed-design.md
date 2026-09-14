@@ -29,19 +29,31 @@
 | P14 发送链路迁到 `/v1/runs`（v2.0，A 方案） | ✅ 完成 | 新增 `api/runs.ts`（提交/订流/查终态/中断/审批回话/引导）+ `api/sse.ts` 抽出 `consumeSse`/`getSse` + store 双通道开关 + `RunStatus.vue` 审批卡片 + 轮末回读对账 | 新增 24 条用例（**122/122 全过**）+ **常驻真实链路 e2e**（`npm run e2e`，5 项全绿）。真链路抓到 2 个真 bug（事件名不在 `event:` 行里 → 全事件被忽略；`run.cancelled` 被判成"完成"）与 1 个字段坑（`tool` ≠ `tool_name`）；审批**真实事件在本环境触发不了**（被 smart approval 自动放行），卡片行为由 8 条组件用例锁住，见 §5.11 与坑 38/39/40 |
 | P15 移动端表格横向溢出（v2.1，分支 `fix/mobile-table-overflow`） | ✅ 完成（2026-09-13） | `lib/markdown.ts` 给表格包 `.table-wrapper`；`style.css` 加宽度契约（wrapper `overflow-x:auto` + table `max-content` + `.md-body` `min-width:0`/`overflow-wrap:anywhere`）；`MessageItem`/`ChatWindow` 补 `min-w-0` | 新增 15 条用例（`lib/markdown.spec.ts` 5 + `style.spec.ts` 5 + `components/MessageItem.spec.ts` 5，**137/137 全过**）+ `vue-tsc` 0 错误 + **Chromium 真浏览器 before/after 对照**（375 / 320 / 1280 三档，脚本与判据见 §10.3） |
 | P16 进后台/断线自动恢复（v2.2 → v2.2.1 → v2.2.2，分支 `fix/background-resume`） | ✅ 完成（2026-09-13，含两轮真机纠偏） | `lib/page-lifecycle.ts`（前台信号 + 退避）+ `stores/chat.ts`（`hcl.activeRun` 记录、`resumeSync()`、`background` 相位、停止仍可用）+ `App.vue` 接线 + `RunStatus`/`InputBox` 文案与按钮。v2.2.1：网络类错误翻中文 + 过时横幅自愈 + 假红字自愈；v2.2.2：记录迁 `localStorage` + 没选会话时自动打开那一轮所在的会话 | 新增 31 条用例（`lib/page-lifecycle.spec.ts` 8 + `stores/resume.spec.ts` 15 + `stores/transient-error.spec.ts` 8，**168/168 全过**）+ 常驻真链路 e2e（`e2e/background-resume.e2e.spec.ts`）+ **真浏览器 7 个场景**（含"标签页被系统回收后重开"，脚本与数字见 §10.4） |
+| P17 空态去示例话术（v2.2.5，`chore/remove-empty-examples`） | ✅ 完成并部署（2026-09-14） | `ChatWindow.vue` 删掉写死的三句示例按钮（`EXAMPLES` 常量），保留「有什么可以帮您？/从一个新会话开始」两行；`App.spec.ts` 加回归断言 | 全量单测通过 + 新断言 **RED/GREEN** + 构建产物三句话术 0 命中 + **线上 bundle 复验** |
+| P18 工具调用内联（v2.3 → v2.3.1，`feat/inline-tool-calls`） | ✅ 完成并部署（2026-09-14） | `stores/chat.ts`（`ToolStep` 扩字段 + `normalize()` 按 `tool_call_id` 配对 + 合并串接 + 实时同步）+ `MessageItem.vue`（工具块放**正文之前**、**默认展开**、`●/✓/✗ 名称 "参数" (耗时)`）+ `RunStatus.vue` 去掉输入框上方那份时间线 | 单测 183 + **RED/GREEN（12 条）** + 新 `e2e/tools-inline.e2e.spec.ts`（真数据 5 会话 / 827 步 / 预览 98.3% / 耗时 99.2%）+ **线上真 DOM 复验 14/14** |
+| P19 会话累计行 + 输入框 ↑ 翻历史（v2.4，`feat/session-totals-input-history`） | ✅ 完成并部署（2026-09-14） | `ChatWindow.vue` 列表末尾一行「本会话累计」（`formatCompactTokens`）+ `InputBox.vue` ↑/↓ 翻历史（输入法合成、多行非首行一律让路）+ `lib/format.ts` 新格式化 | 单测 194 + **RED/GREEN（7 条）** + **线上真 DOM 复验 14/14**（含 ↑ 填回上一条 / ↓ 还原草稿） |
+| P20 上下文水位（v2.5，`feat/context-gauge`） | 🟡 代码完成，**待宿主机重建部署**（本支改了 nginx，必须 build） | 新 `ContextGauge.vue`（贴输入框上方）+ 新 `lib/context-cache.ts`（ⓐ 上次已知）+ `stores/chat.ts` 三来源接线（会话行/`/api/model-info`/`usage.input_tokens`）+ `api/hermes.ts` + `nginx.conf`（新增 `location = /api/model-info` → `hermes:9119`） | 单测 **210** + **RED/GREEN（13 条）** + **真浏览器 14/14**（几何：贴输入框 15px、无横向溢出；配色：98% 时 computed color = `rgb(220,38,38)`）+ 本地桩端到端 **18/18**；部署后需跑线上复验 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
 ### 0.1 跨会话续接（接手先读这段，再读对应阶段章节）
 
 **路径**：`/opt/data/hermes-chat-lite`（远程 `git@github.com:xd6022/hermes-chat-lite.git`，主分支 `main`）
-**当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）、P8（长会话分页与合并）已完成并推送（远程 `main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
+**当前进度**：P0～P3、P6（每轮统计）、P7（搜索/折叠/黑夜模式）、P8（长会话分页与合并）、P15～P19 已完成并部署（`main`）；P4 文件已写好但**必须在宿主机构建验证**（本容器没有 docker daemon）。
 
-**分支现状**：`main` = v1.8.1；`feat/runs-transport` = v2.0（A 方案，待 review 合并）；`fix/mobile-table-overflow` = v2.1（P15 移动端表格横向溢出）；`fix/background-resume` = v2.2（P16 进后台/断线自动恢复，基于 v2.1）。三者是**链式**关系：合并顺序 v2.0 → v2.1 → v2.2。
+**分支现状**（2026-09-14 收口后）：
+- `main` = `daa03e6`，已含 P15（移动端表格）、P16（后台恢复）、P17（空态去话术）、P18（工具内联）、P19（累计行 + ↑ 翻历史），且**已部署到线上**。
+- `fix/background-resume` = `a6a40d8`：`b5961c8`（v2.2.4 前端构建标识）+ 一个**合并提交**（把 main 并进来、解决 `ChatWindow.vue` 空态那处冲突：**保留构建标识、仍然不要示例话术**）。合并干跑零冲突、合并后 195 passed → **等用户合并进 main**。
+- `feat/context-gauge` = `16d5635`（P20 上下文水位）+ **已把 `fix/background-resume` 并进来**（合并提交，`docs/detailed-design.md` 的坑清单处有冲突：坑 46 的"配套/判据"两行 vs 本支新增的坑 47-49，解决口径=**两边都保留，坑 46 在前**）。所以：
+  - 想只要构建标识 → 合 `fix/background-resume`；
+  - 想连水位一起 → 合 `feat/context-gauge`（它已含前者，**不会再冲突**）；
+  - **两种顺序都不会冲突**（合并前已用 `git merge-tree` + 真合并干跑验证）。
+  含 `nginx.conf` 改动 → 合并后**必须重新 build 部署**才生效。
 
-**下一步**：① 宿主机 `docker compose up --build` 重建 → 真机点一遍，重点按 README「上线自检」10 条走；**其中第 10 条（手机切后台再回来）只能您在真机上验**，本容器只能模拟"连接被掐 + 回前台事件"；② P5 Caddy basic_auth；③ 后续候选：`run.completed.messages` 回填工具结果到时间线（现在工具时间线只在流式过程中可见，重开就没了）、真机上把滚动位置补偿手感调一遍、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
+**下一步**：① 合并 `fix/background-resume`（构建标识）与 `feat/context-gauge`（水位）→ 宿主机 `docker compose up -d --build` → 跑线上复验（`/opt/data/.verify/chatlite_live/verify_live_dom.mjs` 真 DOM + `real_browser_ctx.py` 真浏览器）；② P5 Caddy basic_auth；③ 候选：工具块内跟随滚动（用户已接受"想看工具需上滚"，暂不做）、服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
 > **前端真浏览器验证已不再依赖 browser-use**：本容器 browser-use 守护进程会整体卡死，改用容器内自带的 `chrome-headless-shell` + Playwright 直连（`executablePath`）跑真实内核，方法/脚本见 §10.3；卡死时别反复重试，直接走这条。
+> 现成装备（2026-09-14 备好）：内核 `/opt/hermes/.playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell`；驱动 `/opt/data/.verify/pw/bin/python`（uv venv 里装的 playwright，复用上面那个内核、不用下载）。可直接抄的脚本：`/opt/data/.verify/chatlite_live/real_browser_ctx.py`（几何/配色断言）、`verify_live_dom.mjs`（jsdom 真 DOM + 真 API）、`stub_gateway.py`（本地桩：静态产物 + `/api/model-info`→9119 + 其余→8642，绑内核分配端口并自报家门）。
 
 **可复制命令**：
 
@@ -1044,3 +1056,13 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 46. **★★ 手机上"刷了好几次还是老版本" = 入口 HTML 被缓存**（v2.2.3）→ 症状：服务端镜像早换了新产物（旧 `index-*.js` 在容器里已经 404），手机上刷新、杀进程重开都还是旧界面。根因：`location /` 里**没给 `index.html` 任何 `Cache-Control`**（只有 `ETag`/`Last-Modified`），浏览器于是按 `Last-Modified` 做"启发式缓存"，自带 webview 缓存/云加速的国产浏览器更激进；而 `/assets/`（带 hash）那边是 `max-age=604800, immutable`（**这是对的，别动**）→ "旧 HTML + 旧 hash 资源"这套组合被一直用下去，链子断在第一环。修法：`location = /index.html` 里 `Cache-Control: no-store, no-cache, must-revalidate` + `Pragma: no-cache` + `etag off` + `if_modified_since off`（这份 HTML 才 1.5KB，不值得为它省一次请求）；带 hash 的资源保持长缓存 —— 只要入口 HTML 每次是新的，新 HTML 自然会带出新的 hash 文件名。真机上想**立刻绕过**：地址后面加个查询串（`?v=2` —— 缓存按完整 URL 存，必然重新拉 HTML），或开无痕标签页/清该站点缓存。改完若**仍然**被缓存，那说明是浏览器自带的"云加速/极速模式"在缓存（关掉它或换浏览器）；判据是先 `curl -I` 确认入口 HTML 真的带上了 `no-store`。
     **配套**：界面顶部会显示**前端构建标识**（`vite.config.ts` 构建时自动生成：本机构建是"短 sha · 北京时间"，Docker 镜像里没有 `.git` 所以只有时刻；顶栏放紧凑形态，设置面板"连接"与空态底部放完整形态）—— 部署完打开手机对一眼就知道有没有吃到新版，不用再靠猜。
     **判据**：入口 HTML 响应里应能看到 `Cache-Control: no-store, no-cache, must-revalidate`（`wget -S` 或浏览器 devtools）。
+
+47. **★★ 上下文水位三个数字在三个地方，只有一个前端能直接读到（v2.5）** → 想复刻 dashboard 状态栏的 `deepseek-flash │ 407.7k/1m │ [████░░░░░░] 41%`，先弄清三份数据：
+   - **分母（窗口上限，`/1m`）**：只在 **dashboard 后端** —— `hermes_cli/web_server.py` 的 `GET /api/model/info`（容器 **9119**），返回 `effective_context_length`（config 的 `model.context_length` 优先，否则 `agent.model_metadata.get_model_context_length()`）。**API server（8642）完全没有 context 字段**（实测：`/v1/capabilities`、`/api/model/options`、`/health/detailed`、`/api/sessions/{id}` 全无）→ 必须在 nginx 单独加 `location = /api/model-info` 转发到 9119；**不能并进 `/api` 那条**（会打到 8642 变 404）。路径特意叫 `/api/model-info`（不是后端的 `/api/model/info`），避免与 API server 的 `/api/...` 命名空间混淆。
+   - **分子（当前占用，`407.7k`）**：Hermes **不落库**。TUI 那行用的是 `compressor.last_prompt_tokens`（`tui_gateway/server.py` 约 5530 行算出 `context_used/context_max/context_percent`），**经 stdin/stdout JSON-RPC 下发，HTTP 拿不到**（全仓 HTTP 路由里没有它；`gateway/` 下也没有 WebSocket 服务）。前端等价的量是**本轮 `run.completed` 的 `usage.input_tokens`**（同义：最后一次调用实际喂进去的 token）→ 只有跑完一轮才知道，刷新/切走后靠 `localStorage` 记"上次已知"并**明确标注**（`hcl.ctx.<sid>`）。
+   - **模型名**：`GET /api/sessions/{id}` 的 `model` ✓（顺手就有，不用额外请求）。
+   排查手法：全仓 grep `context_percent|context_length|last_prompt_tokens`，再顺着 `runtime_footer.py` → `tui_gateway/server.py` 找到消费端，最后用 `curl http://hermes:9119/api/model/info` 实测字段名 —— **别猜字段**。
+
+48. **★★ 逐轮 token 明细不落库，"切走再回来就没有"不是前端 bug** → Hermes 的 message 行只有 `content/role/timestamp/tool_calls…`，**`token_count` 恒空**（实测一个真实会话 300 条消息，user/assistant/tool 三类非空 0 条）。每轮那行 `⏱ 3.6s · 输入 27.3k · 缓存 …` 是客户端在轮末用**会话累计做差**算出来的（`counters()` 前后各读一次 `GET /api/sessions/{id}`），所以切走/刷新无法复原。能长期显示的只有**会话累计**（`input_tokens`/`cache_read_tokens`/`output_tokens`/`tool_call_count` 都在会话行上）→ 这也是"消息列表末尾那行会话累计"存在的唯一原因。要逐轮历史就必须让服务端落库 usage（动 Hermes 核心，按"不改 Hermes"原则不做）。
+
+49. **★ 核验脚本自身也会"假绿"：`check()` 的参数顺序写反** → 真浏览器核验脚本里 `check(ok, label, detail)` 被调用成 `check("标签", 条件, 细节)` → 第一个位置收了个非空字符串，恒真，**所有断言都过**（打印出来是 `✅ True` 才发现）。教训：① 断言助手的签名要**让写错就报类型错**（或统一成 `check(标签, 条件)`）；② 新写的核验脚本先做一次**反向自检**（把一条断言故意改成必失败，确认它真的红）再采信结果；③ 看输出时留意标签位是否是 `True/False` 这类"不该出现的东西"。

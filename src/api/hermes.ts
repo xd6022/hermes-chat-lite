@@ -108,6 +108,35 @@ export function health(): Promise<HealthResponse> {
   return request<HealthResponse>('/health')
 }
 
+/** dashboard 后端 `/api/model/info` 的返回（只取本项目要用的字段） */
+export interface HermesModelInfo {
+  model?: string
+  provider?: string
+  /** 由 models.dev / 内置元数据推断的窗口大小 */
+  auto_context_length?: number
+  /** config 里 model.context_length 的手工覆盖（0 = 没配） */
+  config_context_length?: number
+  /** 真正生效的那个（config 优先，否则 auto）—— 就是状态栏里的 `/1m` */
+  effective_context_length?: number
+  capabilities?: { context_window?: number; max_output_tokens?: number }
+}
+
+/**
+ * 模型 + 上下文窗口上限（输入框上方那行的分母）。
+ *
+ * ⚠️ 这个接口在 **dashboard 后端（容器 9119）**，**不在** API server（8642）上 ——
+ * 靠 nginx 的 `location = /api/model-info` 转发过去（见 nginx.conf）。
+ * 拿不到（没配转发 / 后端改名 / 网络问题）就返回 null：界面降级成"不显示分母"，
+ * 绝不编数字，也不影响其它功能。
+ */
+export async function getModelInfo(): Promise<HermesModelInfo | null> {
+  try {
+    return await request<HermesModelInfo>('/api/model-info')
+  } catch {
+    return null
+  }
+}
+
 /**
  * 重命名会话（PATCH）。服务端会校验，可能 400（code 都是 `invalid_title`）：
  *  - 重名 → `Title 'x' is already in use by session <id>`（标题有**唯一约束**）

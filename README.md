@@ -20,6 +20,8 @@
 
 ```
 浏览器 → chat.<域名> → Caddy(+basic_auth) → chatlite:80 (nginx 静态站 + /api /v1 反代注入 Authorization)
+                                                          └─ /api/model-info 单独反代到 **hermes:9119**（dashboard 后端，
+                                                             只读，取上下文窗口上限；不在 API server 上，见 nginx.conf）
                                                     ↓ [net_openclaw]
                                                hermes:8642 (API Server)
 ```

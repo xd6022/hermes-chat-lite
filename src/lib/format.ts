@@ -99,6 +99,28 @@ export function formatTokens(n: number): string {
   return `${Math.round(n / 1000)}k`
 }
 
+/**
+ * 大数压缩（上下文水位/会话累计用）：407700 → 407.7k，1000000 → 1m，118842936 → 118.8m
+ *
+ * 与 formatTokens 的区别：这里有百万级的值，用 k 会读成 `118820k` 这种六位数，很难扫读；
+ * 另外整数值不带小数点（`1m` 而不是 `1.0m`），跟 dashboard 状态栏的写法一致。
+ */
+export function formatCompactTokens(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return `${trim1(n / 1000)}k`
+  return `${trim1(n / 1_000_000)}m`
+}
+
+/**
+ * 保留 1 位小数；整数不补 `.0`。
+ * 之所以保留小数：dashboard 状态栏写的就是 `407.7k`，取整成 `408k` 反而丢了信息。
+ */
+function trim1(v: number): string {
+  const r = Math.round(v * 10) / 10
+  return Number.isInteger(r) ? String(r) : r.toFixed(1)
+}
+
 /** 耗时：12.3s / 1m05s */
 export function formatDurationMs(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'

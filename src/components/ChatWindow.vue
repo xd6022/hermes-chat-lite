@@ -7,10 +7,11 @@
  * 更早的由"加载更早的消息"按钮按 offset 翻页（offset 从最新往回数，见 §5.9）。
  */
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { clearBootError, loadEarlier, loadSessions, openSession, store } from '../stores/chat'
-import { formatPercent, formatTokens } from '../lib/format'
+import { clearBootError, loadEarlier, loadModelInfo, loadSessions, openSession, store } from '../stores/chat'
+import { formatCompactTokens, formatPercent } from '../lib/format'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
+import ContextGauge from './ContextGauge.vue'
 import InputBox from './InputBox.vue'
 
 const scroller = ref<HTMLElement | null>(null)
@@ -29,9 +30,9 @@ const totals = computed(() => {
   const inputTotal = t.inputTokens + t.cacheReadTokens
   const rate = inputTotal > 0 ? t.cacheReadTokens / inputTotal : null
   return {
-    input: formatTokens(inputTotal),
+    input: formatCompactTokens(inputTotal),
     cache: rate === null ? '—' : formatPercent(rate),
-    output: formatTokens(t.outputTokens),
+    output: formatCompactTokens(t.outputTokens),
     tools: t.toolCalls,
   }
 })
@@ -97,6 +98,8 @@ watch(
 
 onMounted(() => {
   void toBottom()
+  // 上下文窗口上限（分母）：dashboard 后端 /api/model-info，经 nginx 转发；取不到就不显示
+  void loadModelInfo()
 })
 
 /** 出错后重试：有会话就重载当前会话，否则重拉列表 */
@@ -191,8 +194,10 @@ function retry(): void {
       </div>
     </div>
 
-    <!-- 执行状态条 + 输入框 -->
+    <!-- 执行状态条 + 上下文水位 + 输入框 -->
     <RunStatus />
+    <!-- 上下文水位：模型 + 已用/上限 + 方块条（照 dashboard 状态栏的读法），贴着输入框 -->
+    <ContextGauge />
     <InputBox ref="inputRef" />
   </section>
 </template>

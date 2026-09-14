@@ -3,6 +3,7 @@ import {
   dayBucket,
   displayTitle,
   formatClock,
+  formatCompactTokens,
   formatDurationMs,
   formatPercent,
   formatTokens,
@@ -10,6 +11,34 @@ import {
   tsToDate,
 } from './format'
 import type { HermesSession } from '../api/types'
+
+describe('formatCompactTokens（上下文水位/会话累计）', () => {
+  it('按 dashboard 状态栏的写法压缩：407.7k / 1m / 118.8m', () => {
+    expect(formatCompactTokens(407_700)).toBe('407.7k')
+    expect(formatCompactTokens(1_000_000)).toBe('1m') // 整数值不补 .0
+    expect(formatCompactTokens(118_842_936)).toBe('118.8m')
+    expect(formatCompactTokens(1900)).toBe('1.9k')
+    expect(formatCompactTokens(300)).toBe('300')
+    expect(formatCompactTokens(0)).toBe('0')
+  })
+
+  it('保留一位小数（dashboard 写的就是 407.7k，取整成 408k 反而丢信息）', () => {
+    expect(formatCompactTokens(407_650)).toBe('407.7k')
+    expect(formatCompactTokens(99_940)).toBe('99.9k')
+  })
+
+  it('与 formatTokens 的分工：后者是每轮小数值，前者要能读百万级', () => {
+    expect(formatTokens(118_842_936)).toBe('118843k') // 六位数形态（会话累计那行以前就是它）
+    expect(formatCompactTokens(118_842_936)).toBe('118.8m')
+  })
+
+  it('异常输入不炸', () => {
+    expect(formatCompactTokens(Number.NaN)).toBe('0')
+    expect(formatCompactTokens(-5)).toBe('0')
+    expect(formatDurationMs(0)).toBe('0.0s')
+    expect(formatPercent(0.6316)).toBe('63%')
+  })
+})
 
 function sess(id: string, lastActiveMs: number, extra: Partial<HermesSession> = {}): HermesSession {
   const sec = lastActiveMs / 1000

@@ -37,6 +37,7 @@
 | P22 水位行口径纠偏 + 删「本会话累计」（v2.7，`chore/ctx-gauge-and-session-totals`，PR #16） | ✅ 完成并部署（2026-09-15） | `ContextGauge.vue` 改灰并撤掉分母/百分比/进度条（`模型 │ 窗口 1m │ 本轮输入合计 …`）+ `chat.ts` 删 `totals`/`SessionTotals`/`counters()` 写段 + `ChatWindow.vue` 删「本会话累计」行 | 单测 221 + **RED/GREEN（9 条新断言全红）** + 构建产物「本会话累计/缓存命中/█」**0 命中** + **线上真浏览器**：颜色 `rgb(156,163,175)`、无 █/%、旧行 DOM 与文本都不存在。口径纠偏见坑 52 |
 | P23 发送按钮按相位分派（v2.9，`feat/phase-dispatch-steer`，PR #17） | ✅ 完成并部署（2026-09-15） | `chat.ts` 新增 `canSteer()`/`steer()`/`UiMessage.interrupted`；`InputBox.vue` 按钮与 Enter **按相位分派**（思考/调工具期=补充，正文输出期=暂停且 Enter 静默）；`MessageItem.vue` 贴「已中断」；`RunStatus.vue` 文案改「已中断这一轮」 | 单测 **238** + **RED/GREEN（15 条新断言全红）** + `vite build` + **真浏览器端到端（打真模型真工具）**：工具期按钮 `["暂停","发送"]`、点发送后补充气泡可见（轮末仍在）、本轮输出含 `STEER_OK`（证明模型真按补充执行）、工具期点暂停 → `phase=aborted` + 贴「已中断」；插消息端点口径见坑 53 |
 | P24 静态资源"缺文件"真 404 加固（v2.10，同 `feat/phase-dispatch-steer`） | 🟡 代码完成，**待重建镜像验证** | `nginx.conf` 加根层后缀 location（`try_files $uri =404`）+ `Dockerfile` 加构建期断言（`test -f dist/{index.html,favicon.svg,favicon.ico,apple-touch-icon.png}` + `test -d dist/assets`） | 后缀正则语义 18/18 + 断言 **RED/GREEN**（模拟漏拷 `public/`、产物无 `assets/` 均按预期失败）+ **真 nginx 解析器 crossplane `status: ok` / 0 错**；行为验收（缺文件回 404 而非 200 HTML）需重建镜像后按 §8.4 的 curl 两条 |
+| P25 按时间交错渲染（v2.11，`feat/interleaved-render`） | 🟡 代码完成，**待合并部署** | `UiMessage.kind`（`text`/`tools`）+ `normalize()` 改为按时间切段 + `prependEarlier()` 只在同 kind 合并 + `TurnCtx.segs` 与 `openTextSeg/sealTextSeg/toolsSegFor/replaceTurnSegs`（流式期即交错、轮末用 transcript 整批重建）+ 新 `lib/turns.ts`（按轮分组）+ `MessageItem` 删折叠开关、工具行改常驻小字行 + `ChatWindow` 按轮渲染（轮内 `space-y-2`／轮间 `mt-6`） | 单测 **245**（新增 `lib/turns.spec.ts` 5 条、改写 12 条旧断言）+ **RED/GREEN（还原 3 个源文件 → 12 条核心断言全红）** + `vite build`（`工具调用 (` 0 命中）+ **真浏览器**：段序与服务端 transcript **逐轮完全一致**（11/11）、工具行 0 折叠开关且全部可见、轮内 8px < 轮间 24px、实时一轮中途即 `text→tools` 跑完 `text→tools→text`、滚动锚定无回归（落底 距底 0、上滚不被拽回）。详见 §5.13 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -1059,6 +1060,55 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 
 ---
 
+### 5.13 按时间交错渲染（v2.11 追加）
+
+**一句话**：一轮不再压成一个气泡，而是按**时间顺序**排成一串"段" —— `正文段 → 工具行段 → 正文段 → …`，
+工具行变成**常驻小字行**（灰字 + 缩进、不折叠）。这是用户 2026-09-15 定的口径（待办第 14 条）。
+
+**为什么必须改**（不是审美）：服务端落库本身就是「`assistant(正文 + tool_calls)` → `tool(结果)` → `assistant(…)`」，
+而旧实现的 `normalize()` 把连续 assistant **合并成一个气泡**、`attachPending()` 又把工具**统一堆到正文上方** ⇒
+"哪段话之后调了什么"这个**顺序信息被抹掉**。用户插话（v2.9 的 steer）之所以"放上面不对、放下面也不对"，根子就在这里。
+
+**数据模型**（刻意最小）：
+
+```ts
+UiMessage.kind?: 'text' | 'tools'   // 缺省 'text'；'tools' 段 content 为空、内容在 tools 里
+```
+一轮 = `user 块` + 若干段；**轮级页脚**（每轮统计 /「已中断」/ 错误）挂在**本轮最后一个段**上 —— 它天然就是轮尾。
+
+**为什么不用 `UiTurn { segments: [] }` 包一层**：那要动渲染、滚动锚定、分页与全部既有断言，收益只是"更好看的分组"。
+用扁平列表 + 纯函数分组（`lib/turns.ts: groupIntoTurns()`）得到同样的 DOM，风险小得多（用户原则：简单稳定 > 功能齐全）。
+
+**渲染**：`ChatWindow` 按 `groupIntoTurns()` 的结果渲染 —— 轮内 `space-y-2`（段与段挨近）、轮间 `mt-6`（一眼看出新一轮提问）；
+两处间距实测 8px / 24px。`MessageItem` 的 `kind === 'tools'` 分支渲染 `●/✓/✗ 名称 "参数预览" (耗时)` 小字行，**没有折叠开关**。
+
+**实时链路（边跑边交错）**：
+
+| 时机 | 行为 |
+| --- | --- |
+| `message.delta` | 写进"当前正文段"；若它已被工具行切开 → **新开一段**（这是交错的关键） |
+| `tool.started` | 先把当前正文段**封口**，再新开/续挂一段工具行（同批调用挨在一起：上一批都跑完才另起一段） |
+| `run.completed` / 收尾 | `reconcileTurn()` 用服务端 transcript **整批重建**本轮的段（`replaceTurnSegs`），再用 `syncToolsToMsg()` 按顺序把成败/耗时铺回工具行段 |
+| 拿不到 transcript（断网） | 保留流式期拼出来的段，只把 `streaming` 关掉 —— 降级但不丢 |
+
+**一处实现时改掉的计划**：原计划"`send()` 立刻插一个空正文段当占位"。实现时发现那会造出**空正文段这种假东西**
+（本轮开口先调工具时，界面就是"空气泡 + 工具行 + 正文"）⇒ 改成**按需创建**：第一段是工具行就是工具行、第一段是正文就是正文；
+思考阶段的进展由状态条如实说。单测有断言专门锁"没有空正文段"。
+
+**分页**：`prependEarlier()` 的边界合并**只在同 kind 之间**（`text`+`text` 合并正文、`tools`+`tools` 合并工具行），
+`text`+`tools` 一律不合并 —— 否则又把顺序抹掉了。按 `srcId` 去重的机制不变。
+
+**已知取舍**：① 补充（steer）您那句话仍显示成独立用户块、不参与段序（steer 的注入点是"最近一条工具结果末尾"，
+这是 Hermes 侧语义，不在前端能修的范围）；② 长轮次的 DOM 节点变多（正是当初做折叠的原因，用户已明确选择"常驻小字行"）。
+
+**验证**（2026-09-15）：单测 245 + RED/GREEN（12 条核心断言在还原后全红）+ `vite build` +
+真浏览器（`/opt/data/.verify/review_0915/verify_interleaved4.cjs`）：**段序与服务端 transcript 逐轮完全一致**、
+0 个折叠开关、工具行全部可见、轮内 8px < 轮间 24px、实时一轮中途 `[text,tools]` 跑完 `[text,tools,text]`、
+滚动锚定无回归（落底 距底=0；上滚不被拽回；划到顶触发"加载更早"后顶部那条消息 **Δ=0px**，插入 10336px —
+A/B 与 main 产物行为一致，见坑 61）。
+
+---
+
 ## 12. 已知坑（开发时逐条对照）
 
 1. **CORS 默认关闭** → 必须同源反代，不要试图在前端直接跨域打 8642。
@@ -1143,3 +1193,24 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
 54. **★ 本地反代核验脚本必须删掉 `Origin` / `Referer`** → 否则浏览器发来的请求带 `Origin`，被 API Server 的 CORS 防护直接 **403 空响应**（与坑 21 同源，线上 nginx 就是 `proxy_set_header Origin "";`）。症状是页面报"请求被 Hermes 的 CORS 防护拒绝（403），反代必须清掉它" —— **极易误判成前端 bug**。自建 node 代理里 `delete headers.origin; delete headers.referer` 即可。
 55. **★ 真浏览器核验脚本里两个"恒假"陷阱** → ① 用 `.group` 选择器断言**用户**气泡恒为 false：`MessageItem` 只有助手消息那一支带 `.group`，用户消息是另一个分支 ⇒ 断言永远看不到那句话、却很容易误报成"功能没生效"（改用 `document.body.innerText.includes(文本)`）；② 走自建代理时不修坑 54，整页从第一帧就是错误态，后面所有断言都跑在"假现场"上。两个都实测踩过一遍。
 56. **★ 用 crossplane 解析这份 `nginx.conf` 会"假失败"** → 它是**片段**（运行时被官方镜像入口脚本塞进 `http{}`），单独 parse 会报 `"upstream"/"server" directive is not allowed here`，**错误行指向的正是文件里本来就有的 upstream/server**，别误判成自己改坏了。正确姿势：`{ echo 'events {}'; echo 'http {'; sed 's/\${HERMES_API_SERVER_KEY}/FAKEKEY/g' nginx.conf; echo '}'; } > /tmp/w.conf` 再 `crossplane parse /tmp/w.conf`，`status: ok` 才算过；顺带能把每个 `location` 的**顺序**打出来，用来确认正则优先级。
+
+57. **★★ "一整轮压成一个气泡"会把顺序信息抹掉（v2.11 修）** → 服务端落库是分条的（`assistant(正文+tool_calls)` → `tool` → `assistant`），
+   旧实现把连续 assistant 合并、又把工具统一堆到正文上方 ⇒ "哪段话之后调了什么"永久丢失（用户插话时最明显：放上放下都不对）。
+   现在按时间切段（`kind: text | tools`）+ 工具行常驻小字行。**判断有没有改对**：拿服务端 transcript 推一遍段序，与页面 DOM **逐轮对照**（§5.13 的验证脚本）。
+58. **★ 交错渲染有三条"容易漏"的规则** → ① **相邻正文仍然合并**（不然一轮碎成十几个小块、每块 24px 缝）；
+   ② 一条 assistant **同时有正文和 tool_calls** 时，段序是"正文段在前、工具段在后"（模型先说话后调工具）；
+   ③ `role=tool` 结果行通常不直接成段，但**当前工具段为空时会新开一段**（孤儿结果行 —— 宁可多一行，也不把"调过这个工具"丢掉）。
+   第 ③ 条最容易被"期望函数"漏掉，从而把实现判成错的。
+59. **★ 探针点侧栏会话行：三个坑一起** → ① 按标题片段点，**cron 会话标题会重复** ⇒ 点到别的会话（假失败）；
+   ② `aside button` 把行内"重命名/删除"图标按钮也选进来了，`nth(-1)` **会落到"删除"按钮上**（很危险）；
+   ③ 断言的元素必须用**内容指纹**复核"打开的确实是要验的会话"。正确姿势：`aside button:not([aria-label])` + 指纹核对；
+   指纹要**先去 markdown 记号**（`**粗**`、反引号、列表符在渲染后的 innerText 里搜不到 → 会假跳过）。
+60. **★ 对照类核验的两条纪律** → ① 期望函数必须与实现的**窗口假设**一致：应用会把"窗口起点那半轮"保留成一轮（`ask` 为 null），
+   期望若丢掉它就整体错位；② **别拿提问文本当对齐键** —— 同一句话发多次的会话会全塌成一条（实测把两个"反例"照出来全是假的），**按下标对齐**。
+61. **★ 量"加载更早"的锚偏移有两个经典假象（2026-09-15 两个都踩了）** → ① **锚元素按选择器认**：prepend 之后
+   "第一个 `.md-body`"已经是另一条消息，量出 **18391px** 的恐怖假偏移（真实 ≈0）⇒ 用"内容前 40 字"当 key 前后定位同一元素，
+   并校验前后命中数都是 1；② **用 playwright 的 `click('[data-testid="earlier"]')` 点那个按钮**：它会**先把按钮滚进视口**
+   （scroller 的 scrollTop 先被滚到 ≈0），应用于是按"用户本来就在顶部"做补偿（`scrollTop = 0 + 插入高度`）——**这是正确行为**，
+   但会让"原本在视口上方一万九千像素"的锚元素相对视口移动整页高度，量出 **19062px** 的第二个假数。
+   正确做法：走**真实路径**（把 scrollTop 设 0 触发自动加载），取"此刻视口顶部那条消息"当参照再比（本次 **Δ=0px**）；
+   **A/B 对照**（`/opt/data/.verify/review_0915/ab_anchor2.cjs`：main 产物 vs 本次改动）两边行为一致 ⇒ 不是本次引入的回归。

@@ -42,6 +42,16 @@ export interface UiMessage {
   key: string
   role: 'user' | 'assistant'
   content: string
+  /**
+   * 这一条是什么段（v2.11 交错渲染）：
+   *  - `'text'`（缺省）：正文段（markdown）
+   *  - `'tools'`：**那一时刻**的工具行段（`content` 为空，内容在 `tools` 里）
+   *
+   * 一轮不再压成一个气泡，而是按**时间顺序**排成一串段：`text → tools → text → …`。
+   * 为什么必须这样：服务端落库本身就是「assistant(正文+tool_calls) → tool 结果 → assistant(… )」，
+   * 合并成一个气泡会把"哪段话之后调了什么"这个顺序信息抹掉（用户插话时尤其看得出来）。
+   */
+  kind?: 'text' | 'tools'
   /** 正在逐字渲染（显示光标） */
   streaming?: boolean
   /** 该条消息级别的错误 */
@@ -66,7 +76,7 @@ export interface UiMessage {
   compaction?: boolean
   /**
    * 本轮调用过的工具（内联渲染在这条回复下面，默认折叠）。
-   * 实时轮：轮末从 `store.run.timeline` 落下来；历史/刷新后：由 normalize() 配对还原。
+   * 只有 `kind === 'tools'` 的段才带它（历史/刷新后由 normalize() 配对还原；实时轮边跑边填）。
    */
   tools?: ToolStep[]
 }
@@ -325,82 +335,84 @@ function textOf(m: HermesMessage): string {
 }
 
 /**
- * 历史消息 → 界面消息（设计文档 3.3 / 12 章）：
+ * 历史消息 → 界面消息段（v2.11 改为**按时间交错**，设计文档 3.3 / 12 章）：
  *  1. 丢掉非 user/assistant/tool（system 等）
- *  2. 丢掉 content 为空的 assistant —— 那是工具调用轮，界面不该出现空泡泡，
- *     但**它的 tool_calls 必须留下**（挂到本轮那条有正文的回复下面）
+ *  2. content 为空的 assistant **不留空段**，但它的 `tool_calls` 必须留下 → 变成一段 `tools`
  *  3. content 为数组时取 text 片段拼接
- *  4. 压缩摘要消息单独标记（折叠显示，且不参与合并）
- *  5. **连续 assistant 合并成一段**（合并时 tools 一并串接，否则工具会挂错位置）
- *  6. 工具调用内联到"本轮产出正文的那条 assistant"下面（刷新/翻页后仍在，
- *     与 dashboard 同一份数据来源）
- *  7. `role=tool` 的结果行不进气泡，只用来补该次调用的成败与耗时
+ *  4. 压缩摘要消息单独标记（折叠显示，且不参与任何合并）
+ *  5. **连续 assistant 正文仍然合并成一段** —— 但**工具段把它们切开**：段序是
+ *     `text → tools → text → …`，即真实的先后
+ *  6. 一条 assistant 同时有正文和 `tool_calls` 时：先出正文段、紧跟一段 `tools`（模型是先说后调）
+ *  7. `role=tool` 的结果行不进任何段，只用来回填该次调用的成败与耗时（按 `tool_call_id`）
  *
- * 为什么必须合并：一次工具轮次里模型可能说好几段话，transcript 里就是连续多条
- * assistant。实测本会话有一条 19 条连续的 assistant（每段都是我一次工具轮次的
- * 短句）。分开渲染 = 段与段之间 24px 间距 + 复制出来多空行，读起来像"自动加了
- * 换行"；合并后同一条回答连成一段，与流式时的观感也一致（流式本来就只有一块）。
+ * 为什么正文段仍要合并：一次工具轮次里模型可能连说好几段话（实测本会话有一条 19 条连续
+ * 的 assistant 短句）。每段单独成块 = 段间 24px 间距 + 复制出来多空行，读起来像"自动加了
+ * 换行"。合并只发生在**相邻同类**（中间没有工具行）时，所以顺序信息不再丢。
  */
 export function normalize(raw: HermesMessage[]): UiMessage[] {
   const out: UiMessage[] = []
-  /** 还没归属的工具调用（本轮工具跑完了，等正文出来再一起挂上去） */
-  let pending: ToolStep[] = []
+  /** 本轮的"当前工具段"：后面的 `role=tool` 结果行按 callId 回填到它里面 */
+  let toolsSeg: UiMessage | null = null
+
+  /** 能承接下一段正文的那条段（相邻同类才合并；被工具段切开就另起一段） */
+  const lastTextSeg = (): UiMessage | null => {
+    const last = out[out.length - 1]
+    return last && last.role === 'assistant' && !last.compaction && last.kind !== 'tools' ? last : null
+  }
 
   /**
-   * 把挂起的工具落到"当前这条回复"上；没有可落的目标（例如这一轮只调了工具、
-   * 正文还没落库）就单独生成一条只带工具的消息 —— 宁可多一个小块，也不丢信息。
+   * 新开一段工具行（空段也要开：宁可多一行，也不把"调过这个工具"丢掉）。
+   * key 用**来源消息 id** 派生（确定性：同一次 normalize 结果稳定，方便测试比对；
+   * 服务端 id 全局唯一 ⇒ 分页拼接时也不会撞 key）。
    */
-  const attachPending = (): void => {
-    if (!pending.length) return
-    const last = out[out.length - 1]
-    if (last && last.role === 'assistant' && !last.compaction) {
-      last.tools = [...(last.tools ?? []), ...pending]
-    } else {
-      out.push({ key: `h_tools_${pending[0].callId ?? out.length}`, role: 'assistant', content: '', tools: pending })
+  const openToolsSeg = (idHint: number | string): UiMessage => {
+    const seg: UiMessage = {
+      key: `h_tools_${idHint}`,
+      role: 'assistant',
+      kind: 'tools',
+      content: '',
+      tools: [],
     }
-    pending = []
+    out.push(seg)
+    toolsSeg = seg
+    return seg
   }
 
   for (const m of raw) {
     if (m.role === 'tool') {
-      pairResult(pending, m)
+      const seg = toolsSeg ?? openToolsSeg(m.id)
+      pairResult(seg.tools as ToolStep[], m)
       continue
     }
     if (m.role !== 'user' && m.role !== 'assistant') continue
 
     if (m.role === 'user') {
-      // 跨轮：先把手上的工具挂给上一条回复（否则会挂到下一个提问之后的回复上）
-      attachPending()
+      toolsSeg = null // 跨轮：上一轮的工具段不再接收结果行
       out.push({ key: `h_${m.id}`, role: 'user', content: textOf(m), srcId: m.id })
       continue
     }
 
-    // 先把工具收下来（即使这条 assistant 的正文是空的 —— 纯工具轮）
-    collectToolCalls(m, pending)
-
     const text = textOf(m)
-    if (!text.trim()) continue
-
-    if (isCompactionNote(text)) {
-      attachPending() // 压缩边界：工具不挂到摘要上
-      out.push({ key: `h_${m.id}`, role: 'assistant', content: text, srcId: m.id, compaction: true })
-      continue
+    if (text.trim()) {
+      if (isCompactionNote(text)) {
+        toolsSeg = null // 压缩边界：工具不挂到摘要上
+        out.push({ key: `h_${m.id}`, role: 'assistant', content: text, srcId: m.id, compaction: true })
+      } else {
+        const prev = lastTextSeg()
+        if (prev) {
+          prev.content = `${prev.content}\n\n${text}`
+          prev.srcId = m.id
+        } else {
+          out.push({ key: `h_${m.id}`, role: 'assistant', kind: 'text', content: text, srcId: m.id })
+        }
+      }
     }
 
-    // ⚠️ 这里**不 flush**：一条 assistant 可以同时有正文和 tool_calls，它的结果行在后头，
-    //    提前 flush 会让结果行（tool_call_id 配对）落空、变成没有参数的孤儿步骤。
-    //    统一等"跨轮"或收尾时再挂 —— 归属就是本轮那条（合并后的）回复。
-    const prev = out[out.length - 1]
-    if (prev && prev.role === 'assistant' && !prev.compaction) {
-      prev.content = `${prev.content}\n\n${text}`
-      prev.srcId = m.id
-    } else {
-      out.push({ key: `h_${m.id}`, role: 'assistant', content: text, srcId: m.id })
+    // 正文之后紧接着它自己那批工具调用（顺序：先说的话在前、调的工具在后）
+    if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+      collectToolCalls(m, openToolsSeg(m.id).tools as ToolStep[])
     }
   }
-
-  // 收尾：最后一轮可能只调了工具（正文还没落库，例如这一轮被中断）
-  attachPending()
   return out
 }
 
@@ -468,35 +480,42 @@ export function toolStepsOf(msgs: HermesMessage[]): ToolStep[] {
 export const HISTORY_PAGE = 100
 
 /**
- * 把"更早的一页"拼到前面，并在分页边界处补一次合并 —— 一条几十段的 assistant
- * 会被分页切开（前 100 条一页），不补的话边界处还会留下那 24px 的缝。
+ * 把"更早的一页"拼到前面，并在分页边界处补一次合并 —— 一轮的正文/工具段会被分页切开
+ * （前 100 条一页），不补的话边界处会留下那 24px 的缝、工具段也会被拆成两截。
+ *
+ * v2.11：**只在同 kind 之间合并**。`text`+`text` 合并正文、`tools`+`tools` 合并工具行；
+ * `text`+`tools` 一律**不合并**（直接首尾相接）—— 合并就又把顺序信息抹掉了，正是本次要修的东西。
  */
 export function prependEarlier(older: UiMessage[], current: UiMessage[]): UiMessage[] {
   if (!older.length) return current
   if (!current.length) return older
   const last = older[older.length - 1]
   const first = current[0]
-  if (
+  const kindOf = (m: UiMessage): 'text' | 'tools' => m.kind ?? 'text'
+  const sameKind =
     last.role === 'assistant' &&
     first.role === 'assistant' &&
     !last.compaction &&
-    !first.compaction
-  ) {
-    const mergedTools = [...(last.tools ?? []), ...(first.tools ?? [])]
-    const merged: UiMessage = {
-      ...last,
-      content: `${last.content}\n\n${first.content}`,
-      // 保留较新那条的运行时附注（统计/错误/流式标记）
-      stats: first.stats ?? last.stats,
-      error: first.error ?? last.error,
-      streaming: first.streaming ?? last.streaming,
-      srcId: first.srcId ?? last.srcId,
-      // 分页边界上的工具也要串起来（与 normalize 内部合并同口径，否则边界处工具会丢）
-      tools: mergedTools.length ? mergedTools : undefined,
-    }
-    return [...older.slice(0, -1), merged, ...current.slice(1)]
+    !first.compaction &&
+    kindOf(last) === kindOf(first)
+  if (!sameKind) return [...older, ...current]
+
+  const merged: UiMessage = {
+    ...last,
+    // 保留较新那条的运行时附注（统计/错误/中断/流式标记）—— 轮级页脚挂在最后一个段上
+    stats: first.stats ?? last.stats,
+    error: first.error ?? last.error,
+    interrupted: first.interrupted ?? last.interrupted,
+    streaming: first.streaming ?? last.streaming,
+    srcId: first.srcId ?? last.srcId,
+    content:
+      kindOf(last) === 'text' ? `${last.content}\n\n${first.content}` : last.content,
+    tools:
+      kindOf(last) === 'tools'
+        ? [...(last.tools ?? []), ...(first.tools ?? [])]
+        : last.tools,
   }
-  return [...older, ...current]
+  return [...older.slice(0, -1), merged, ...current.slice(1)]
 }
 
 /* ---------------- 动作 ---------------- */
@@ -734,7 +753,13 @@ let stopRequested = false
 /** 本轮上下文。finally 里还要读，所以必须是对象而不是局部标量。 */
 interface TurnCtx {
   sid: string
-  asst: UiMessage
+  /**
+   * 本轮的所有段（按时间序：`text` / `tools` 交替）。
+   *
+   * v2.11 之前这里是单个 `asst`（一整轮压成一个气泡）。现在一轮可能有十几段，
+   * 轮末对账时也会**整批替换**成服务端 transcript 重建出来的那套（见 replaceTurnSegs）。
+   */
+  segs: UiMessage[]
   /** runs 通道的 run_id（中断 / 审批回话都要它） */
   runId: string | null
   /** 收到过终止事件（run.completed / run.failed / run.cancelled / error） */
@@ -749,6 +774,64 @@ interface TurnCtx {
    */
   transportError: boolean
   usage: HermesUsage | null
+}
+
+/** 本轮最后一个段（轮级页脚 —— 统计 / 已中断 / 错误 —— 一律挂它上面） */
+function lastSeg(ctx: TurnCtx): UiMessage {
+  const last = ctx.segs[ctx.segs.length - 1]
+  return last ?? openTextSeg(ctx)
+}
+
+/**
+ * 取"当前正文段"：最后一段就是正文段（且没被工具行切开）时复用它，否则**新开一段**。
+ *
+ * 新开这一步正是交错渲染的关键 —— 工具行**之后**的正文属于新的时间段，
+ * 不能拼回到工具行之前那段里（那样又变成"顺序被抹掉"的旧样子）。
+ */
+function openTextSeg(ctx: TurnCtx): UiMessage {
+  const last = ctx.segs[ctx.segs.length - 1]
+  if (last && !last.compaction && last.kind !== 'tools') return last
+  const seg: UiMessage = { key: tempKey(), role: 'assistant', kind: 'text', content: '', streaming: true }
+  ctx.segs.push(seg)
+  store.messages.push(seg)
+  return seg
+}
+
+/** 工具一开跑：把当前正文段**封口**（之后的正文必须另起一段，顺序才不会被抹掉） */
+function sealTextSeg(ctx: TurnCtx): void {
+  const last = ctx.segs[ctx.segs.length - 1]
+  if (last && last.kind !== 'tools') last.streaming = false
+}
+
+/**
+ * 这一步该挂到哪一段工具行：
+ *  - 最后一段就是工具行、且它末尾那步**还在跑** → 同一批调用，继续挂它（几行挨在一起）；
+ *  - 否则另开一段（上一批已经跑完 ⇒ 这是新的时间点）。
+ */
+function toolsSegFor(ctx: TurnCtx): UiMessage {
+  const last = ctx.segs[ctx.segs.length - 1]
+  if (last && last.kind === 'tools') {
+    const steps = last.tools ?? []
+    const tail = steps[steps.length - 1]
+    if (!tail || tail.status === 'run') return last
+  }
+  const seg: UiMessage = { key: tempKey(), role: 'assistant', kind: 'tools', content: '', tools: [] }
+  ctx.segs.push(seg)
+  store.messages.push(seg)
+  return seg
+}
+
+/**
+ * 轮末用服务端 transcript 重建本轮的段（整批替换流式期拼出来的那些）。
+ *
+ * 为什么要整批换：SSE 的 delta 拼接在"工具前后的多段正文"上不可靠（前导换行杂质、断线丢字），
+ * 落库的才是权威；而且重建后**实时与历史走同一个 normalize**，形状完全一致。
+ */
+function replaceTurnSegs(ctx: TurnCtx, segs: UiMessage[]): void {
+  const mine = new Set(ctx.segs.map((s) => s.key))
+  const kept = store.messages.filter((m) => !mine.has(m.key))
+  store.messages = [...kept, ...segs]
+  ctx.segs = segs
 }
 
 /** 审批卡片：已回话、且这一轮已经继续往下跑了 → 收起 */
@@ -781,14 +864,27 @@ function toolErrored(d: unknown): boolean {
 }
 
 /**
- * 把本轮工具**实时**同步到这条回复上（内联展示用的就是它）。
+ * 把本轮时间线的**成败与耗时**铺到工具行段上（内联展示看的就是它）。
  *
  * 为什么不是等轮末再挂：工具是"边跑边看"的东西 —— 等这一轮全部结束才出现，
- * 十几分钟的长任务期间界面就只剩一行"正在使用 xx…"。轮末还会再挂一次
- * （覆盖 reconcile 从历史补齐的那份），两条路径同一形状。
+ * 十几分钟的长任务期间界面就只剩一行"正在使用 xx…"。
+ *
+ * 实现：工具段里存的是**副本**（时间线另有用途，两者互不干扰），而两边的追加顺序完全一致
+ * ⇒ 按顺序逐字段拷贝即可 —— 不需要记索引、更不需要状态机。
  */
 function syncToolsToMsg(ctx: TurnCtx): void {
-  if (store.run.timeline.length) ctx.asst.tools = store.run.timeline.map((s) => ({ ...s }))
+  const tl = store.run.timeline
+  let i = 0
+  for (const seg of ctx.segs) {
+    if (seg.kind !== 'tools') continue
+    for (const st of seg.tools ?? []) {
+      const src = tl[i++]
+      if (!src) continue
+      st.status = src.status
+      st.ms = src.ms
+      if (src.preview) st.preview = src.preview
+    }
+  }
 }
 
 /**
@@ -803,7 +899,8 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
     case 'assistant.delta':
     case 'message.delta': {
       const d = (data as SseDelta).delta
-      if (d) ctx.asst.content += d
+      // 写进"当前正文段"；若这一段已被工具行切开，openTextSeg 会新开一段（交错的关键）
+      if (d) openTextSeg(ctx).content += d
       store.run.phase = 'writing'
       dropResolvedApproval()
       break
@@ -826,15 +923,19 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
       store.run.phase = 'tool'
       store.run.currentTool = nm
       store.run.toolPreview = preview
-      store.run.timeline.push({
+      const step: ToolStep = {
         name: nm,
         preview: preview ?? '',
         status: 'run',
         ms: null,
         // 本地计时锚点：不依赖事件里的 ts（时钟/网络抖动会跳），与 RunStatus 同口径
         tPerf: performance.now(),
-      })
-      syncToolsToMsg(ctx) // 内联展示：工具一开跑就出现在这条回复下面
+      }
+      store.run.timeline.push(step)
+      sealTextSeg(ctx) // 正文段封口：之后的正文是新的一段
+      const seg = toolsSegFor(ctx)
+      seg.tools = [...(seg.tools ?? []), { ...step }]
+      syncToolsToMsg(ctx)
       break
     }
     case 'tool.completed': {
@@ -853,7 +954,7 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
       // 覆盖而非追加：delta 拼接在极端情况下可能丢字/重复（旧通道专有事件）
       const p = data as SseAssistantCompleted
       if (typeof p.content === 'string' && p.content.length > 0) {
-        ctx.asst.content = p.content
+        openTextSeg(ctx).content = p.content
       }
       break
     }
@@ -894,7 +995,7 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
       ctx.sawTerminal = true
       ctx.sawError = true
       const m = String((data as { error?: string })?.error || '这一轮失败了')
-      ctx.asst.error = m
+      lastSeg(ctx).error = m
       store.run.phase = 'error'
       store.run.errorMessage = m
       break
@@ -908,7 +1009,7 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
       ctx.sawTerminal = true
       ctx.sawError = true
       const m = (data as SseError).message || '未知错误'
-      ctx.asst.error = m
+      lastSeg(ctx).error = m
       store.run.phase = 'error'
       store.run.errorMessage = m
       break
@@ -981,14 +1082,11 @@ async function reconcileTurn(ctx: TurnCtx, sentText: string): Promise<boolean> {
   const turn = turnSlice(raw, sentText)
   if (!turn.length) return false
 
-  // ① 权威正文：合并本轮所有 assistant 文本。SSE delta 拼接在"中间段落"上不可靠
-  //    （工具调用前后的两段），服务端落库的才是权威；顺带抹掉 delta 的前导换行杂质。
-  const joined = turn
-    .filter((m) => m.role === 'assistant')
-    .map(textOf)
-    .filter((t) => t.trim())
-    .join('\n\n')
-  if (joined.trim()) ctx.asst.content = joined
+  // ① 权威段序：用服务端落库的 transcript **整批重建**这一轮的段（正文段/工具行段按真实先后）。
+  //    SSE 的 delta 拼接在"工具前后的多段正文"上不可靠（前导换行、断线丢字），落库的才是权威；
+  //    重建后**实时与历史走同一个 normalize**，形状完全一致。
+  const segs = normalize(turn).filter((m) => m.role === 'assistant')
+  if (segs.length) replaceTurnSegs(ctx, segs)
 
   // ② 安全闸门拦截原文（旧通道靠 run.completed.messages，新通道没这个字段）
   store.run.blocked = blockFromMessages(turn)
@@ -1123,15 +1221,23 @@ function stopWatching(): void {
  */
 async function recoverTurn(sid: string, sentText: string): Promise<boolean> {
   if (sid !== store.currentId) return false
-  let asst = [...store.messages].reverse().find((m) => m.role === 'assistant')
-  if (!asst) {
-    asst = { key: tempKey(), role: 'assistant', content: '' }
-    store.messages.push(asst)
+  // 本轮的段 = 从尾部往前、直到遇到用户块为止的那一串 assistant 段（顺序不变）
+  const segs: UiMessage[] = []
+  for (let i = store.messages.length - 1; i >= 0; i--) {
+    const m = store.messages[i]
+    if (m.role !== 'assistant') break
+    segs.unshift(m)
   }
-  asst.streaming = false
+  if (!segs.length) {
+    // 界面上这一轮一点痕迹都没有（页面被回收过）→ 先补一个空正文段，让对账有落点
+    const seg: UiMessage = { key: tempKey(), role: 'assistant', kind: 'text', content: '' }
+    store.messages.push(seg)
+    segs.push(seg)
+  }
+  for (const s of segs) s.streaming = false
   const ctx: TurnCtx = {
     sid,
-    asst,
+    segs,
     runId: null,
     sawTerminal: true,
     cancelled: false,
@@ -1179,8 +1285,11 @@ async function applyRunStatus(rec: ActiveRunRecord): Promise<boolean> {
   if (st?.status === 'completed') {
     const ok = await recoverTurn(rec.sessionId, rec.sentText)
     if (!ok && typeof st.output === 'string' && st.output.trim()) {
-      const asst = [...store.messages].reverse().find((m) => m.role === 'assistant')
-      if (asst && !asst.content.trim()) asst.content = st.output
+      // 对账拿不到、且界面上一个字的正文都没有 → 用 run 的 output 兜底（补一个正文段）
+      const hasText = store.messages.some((m) => m.role === 'assistant' && m.content.trim())
+      if (!hasText && typeof st.output === 'string' && st.output.trim()) {
+        store.messages.push({ key: tempKey(), role: 'assistant', kind: 'text', content: st.output })
+      }
     }
     store.run.phase = 'done'
     store.run.recovered = store.run.recovered || ok
@@ -1420,10 +1529,8 @@ export async function send(text: string): Promise<void> {
   // 本轮开始前的累计计数基线（用于算本轮缓存命中）
   const before = await counters(sid)
 
-  // 乐观插入：用户消息 + 助手空占位
+  // 乐观插入：用户块 + 本轮**第一个正文段**（空、带流式光标）
   store.messages.push({ key: tempKey(), role: 'user', content })
-  store.messages.push({ key: tempKey(), role: 'assistant', content: '', streaming: true })
-  const asst = store.messages[store.messages.length - 1]
 
   store.streaming = true
   clearBootError()
@@ -1434,7 +1541,7 @@ export async function send(text: string): Promise<void> {
   /** 本轮上下文：两条通道共用（事件归约 + 收尾都要它） */
   const ctx: TurnCtx = {
     sid,
-    asst,
+    segs: [],
     runId: null,
     sawTerminal: false,
     cancelled: false,
@@ -1442,6 +1549,11 @@ export async function send(text: string): Promise<void> {
     transportError: false,
     usage: null,
   }
+  // 注意：这里**不预建空正文段**（v2.11 改）。
+  // 旧行为是一上来就插一个空气泡当占位；交错渲染后那样会留下"空正文段"这种假东西：
+  // 只要这一轮开口先调工具（很常见），界面上就会出现一个空气泡 + 工具行 + 正文。
+  // 现在改成**按需创建**：思考阶段的进展由状态条（RunStatus）如实说，
+  // 第一段是工具行就是工具行、第一段是正文就是正文 —— 与真实时间顺序一致。
 
   try {
     if (sendTransport() === 'runs') {
@@ -1453,9 +1565,9 @@ export async function send(text: string): Promise<void> {
     if (isAbortError(e)) {
       // 用户主动停止 —— 保留已渲染内容，phase 在 finally 里判定为 aborted
     } else {
-      asst.error = msgOf(e)
+      lastSeg(ctx).error = msgOf(e)
       store.run.phase = 'error'
-      store.run.errorMessage = asst.error
+      store.run.errorMessage = msgOf(e)
       ctx.sawError = true
       ctx.transportError = true // 到这里只可能是传输层异常（服务端错误走 error 事件）
     }
@@ -1464,7 +1576,8 @@ export async function send(text: string): Promise<void> {
     // 断线后拿不到任何补偿 → 只能靠下面的回读对账）
     const streamLost = !ctx.sawTerminal
 
-    asst.streaming = false
+    // 本轮的段一律封口（光标只该出现在"正在写的这一段"上）
+    for (const s of ctx.segs) s.streaming = false
     store.streaming = false
     abortCtl = null
     store.run.approval = null
@@ -1484,21 +1597,24 @@ export async function send(text: string): Promise<void> {
       if (st) {
         if (st.status === 'completed') {
           ctx.sawTerminal = true
-          if (!asst.content && typeof st.output === 'string') asst.content = st.output
+          // 对账还没做、这一轮界面上又没正文（流断在很早）→ 直接用 run 的 output 补一个正文段
+          if (!ctx.segs.some((s) => s.content.trim()) && typeof st.output === 'string' && st.output.trim()) {
+            openTextSeg(ctx).content = st.output
+          }
           ctx.usage = st.usage ?? ctx.usage
           // ★ 流是"客户端这边断的"（网络类异常），而服务端说这一轮**完成了** →
           //   那个红字是假报错，清掉（真机撞到：回复已补出来，下面还挂着 "Failed to fetch"）。
           //   服务端真失败的情况走 run.failed / error 事件，transportError 为 false，不受影响。
           if (ctx.transportError) {
             ctx.sawError = false
-            asst.error = null
+            lastSeg(ctx).error = null
             store.run.errorMessage = null
           }
         } else if (st.status === 'failed') {
           ctx.sawTerminal = true
           ctx.sawError = true
           const m = String(st.error || '这一轮失败了')
-          asst.error = m
+          lastSeg(ctx).error = m
           store.run.errorMessage = m
         } else if (st.status === 'cancelled') {
           ctx.sawTerminal = true
@@ -1523,14 +1639,14 @@ export async function send(text: string): Promise<void> {
     }
     // 被打断的那一轮贴「已中断」标记（对齐 dashboard 的 `· interrupted`）；
     // 只认"用户点了暂停"或"服务端取消了"，不把"流丢了但服务端还在跑"算进来。
-    if (ctx.cancelled || stopRequested) asst.interrupted = true
+    if (ctx.cancelled || stopRequested) lastSeg(ctx).interrupted = true
 
     if (stillRunning && !stopRequested) {
       // ★ 服务端那一轮还在跑：界面必须如实说"还在后台执行"，而不是"中断"。
       //   轮询交给 v2.2 的 watchRun（退避 1s→30s 封顶），回到前台会立刻再同步一次。
       //
       //   顺带把"断流"当成错误留下的痕迹抹掉：连接断 ≠ 这一轮失败，红字会骗人。
-      asst.error = null
+      lastSeg(ctx).error = null
       store.run.errorMessage = null
       ctx.sawError = false
       store.run.phase = 'background'
@@ -1541,14 +1657,15 @@ export async function send(text: string): Promise<void> {
     }
     if (store.run.phase !== 'background') store.run.endedAt = performance.now()
 
-    // 工具调用落到**本轮这条回复**下面（内联渲染，与 dashboard 同一种"跟着上下文走"）。
-    // 覆盖式同步：断线时 reconcileTurn 从历史补齐的那份也在这里统一成同一形状。
+    // 工具行的成败/耗时铺到本轮的各个工具段上（内联渲染，与 dashboard 同一种"跟着上下文走"）。
+    // 覆盖式同步：断线时 reconcileTurn 从历史重建的那份也在这里统一成同一形状。
     syncToolsToMsg(ctx)
 
     if (ctx.sawTerminal && !ctx.sawError && !ctx.cancelled) {
       // 每轮统计：耗时 / 输入 / 输出 / 缓存命中率（取本轮结束后的累计计数做差）
       const after = await counters(sid)
-      asst.stats = buildStats({
+      // 每轮统计挂在**本轮的最后一个段**上（页脚位置：正文之后、工具行之后都自然）
+      lastSeg(ctx).stats = buildStats({
         ms: store.run.endedAt - store.run.startedAt,
         usage: ctx.usage,
         before,

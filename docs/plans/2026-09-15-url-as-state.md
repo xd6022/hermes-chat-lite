@@ -18,8 +18,8 @@
 | S3 `chat.ts` 新口径 | ✅ 完成 | `goHome()`；`openSession` 返回可判别结果；`resumeSync` 只接当前会话 |
 | S4 `App.vue` 挂载与分发 | ✅ 完成 | 启动按地址进入；popstate/hashchange → 打开会话 |
 | S5 `Sidebar.vue` 改导航 | ✅ 完成 | 点行 push；「新会话」清地址不建会话；删除当前会话 replace 回欢迎页 |
-| S6 测试与真浏览器验证 | ⬜ | 6 条验收判据全过 + RED/GREEN |
-| S7 文档与交付 | ⬜ | detailed-design（新节 + 看板 P26 + 坑位）、待办文档、提交推送 |
+| S6 测试与真浏览器验证 | ✅ 完成 | 6 条验收判据全过 + RED/GREEN |
+| S7 文档与交付 | ✅ 完成 | detailed-design（新节 + 看板 P26 + 坑位）、待办文档、提交推送 |
 
 ## 一、口径（用户已拍板，别再问）
 
@@ -95,3 +95,27 @@
   RED/GREEN：还原 `chat.ts`/`App.vue`/`Sidebar.vue` → **7 条新断言全红**。
   ⚠️ RED 阶段发现一个**假通过**：同文件里 `store` 是模块级单例，上一组用例留下的 `currentId/messages` 会让"启动就进那个会话"
   这类断言照样绿 ⇒ 已在新 describe 的 `beforeEach` 里显式清 store（这条记进坑位）。
+
+### S6 验收结果（2026-09-15，真浏览器 9/9）
+
+```
+✅ 1. 打开 A → 刷新 → 仍在 A — 刷新前 4 轮 / 刷新后 4 轮，hash=#/s/20260915_172336_00ed5f
+✅ 2. 在 A 点 B → 刷新 → 落 B（不跳回 A） — hash=#/s/api_1789381068_4385a09f, 轮数=12
+✅ 3. 从 B 按返回键 → 回到 A — hash=#/s/20260915_172336_00ed5f
+✅ 4a. 无效 id → 欢迎页 + 裸域名 + 提示 — welcome=true, hash="", notice="该会话不存在，请重新创建"
+✅ 4b. 提示 5 秒自动消失 — notice=null
+✅ 4c. 再进来 → 点一下提示立刻消失 — 点击前="该会话不存在，请重新创建" 点击后=null
+✅ 5. 点「新对话」→ 地址清空 + 欢迎页 + 不新建空会话 — 会话数 50→50，0 消息会话 2→2
+✅ 6a. 跑着时点别的会话 → 地址撤回当前会话 — hash=#/s/api_1789481375_03f0877d
+✅ 6b. 跑着时刷新 → 同一会话 + 认出还在跑 — phase=background｜"连接已暂时中断，任务仍在后台执行（回到页面会自动同步）"
+[pageerror] 无 ｜ 测试会话 DELETE 200 → 复查 404
+```
+
+脚本：`/opt/data/.verify/url_state/verify_url_state.cjs`（本地 dist + 反代真 API + 真模型真工具）。
+
+### S7 交付
+
+- 提交 `e01222d`（分支 `feat/url-as-state`，已推送、本地=远端）；基线 `origin/main` = `6afbf7c`。
+- 文档：`detailed-design.md` 的 **P26** 看板行、**§5.14 地址即状态**、§8.5 加 v2.12 版本指纹行、坑 62~64。
+- 待部署：合并 main → 用户侧 `git pull && docker compose up -d --build`；线上判版本看
+  `该会话不存在，请重新创建` + `#/s/` 两个指纹。

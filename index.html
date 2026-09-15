@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#ffffff" />
+    <!-- 图标三件套（2026-09-15 加）：此前一个都没放 —— tab 上显示的是旧壳（Open WebUI）
+         留下来的图标，而且浏览器每次还会去探 /favicon.ico。三个文件在 public/，
+         vite 构建时拷进 dist 根，由 nginx 直接托管。 -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>Hermes</title>
     <script>
       // 主题必须在首帧之前定下来，否则深色模式会闪一下白屏（FOUC）。

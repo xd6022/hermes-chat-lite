@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Chat">
+  <!-- 自用聊天端的图标：深底 + 白色首字母 C（Chat）。只取首字母的理由很实际 ——
+       tab 上只有 16px，"Chat" 四个字母会糊成一团，单字母才看得清。
+       刻意不用任何渐变/描边，小尺寸下要么清楚，要么什么都看不清。 -->
+  <rect width="64" height="64" rx="14" fill="#111827" />
+  <text x="32" y="45" text-anchor="middle" fill="#ffffff"
+        font-family="-apple-system, 'Segoe UI', Roboto, sans-serif"
+        font-size="40" font-weight="700">C</text>
+</svg>

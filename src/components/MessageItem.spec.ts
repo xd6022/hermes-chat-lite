@@ -146,3 +146,24 @@ describe('MessageItem：本轮工具调用块', () => {
     ).toBe(false)
   })
 })
+
+describe('MessageItem：被打断的轮次要贴「已中断」（对齐 dashboard 的 · interrupted）', () => {
+  // 注意：不能复用上面的 render()（它是给表格用例写的，会等 '.table-wrapper' 出现），
+  // 这里正文是纯文本 → 直接 mount + waitFor 正文落地。
+  function mountMsg(item: UiMessage) {
+    return mount(MessageItem, { props: { msg: item } })
+  }
+
+  it('有 interrupted 标记时贴出「已中断」，且已输出的正文保留', async () => {
+    const w = mountMsg(ui({ content: '说到一半的内容', interrupted: true }))
+    const mark = w.find('[data-testid="msg-interrupted"]')
+    expect(mark.exists()).toBe(true)
+    expect(mark.text()).toContain('已中断')
+    await vi.waitFor(() => expect(w.find('.md-body').text()).toContain('说到一半的内容'))
+  })
+
+  it('正常完成的轮次不出现这个标记', async () => {
+    const w = mountMsg(ui({ content: '正常回答' }))
+    expect(w.find('[data-testid="msg-interrupted"]').exists()).toBe(false)
+  })
+})

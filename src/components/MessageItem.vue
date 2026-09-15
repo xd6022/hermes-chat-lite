@@ -170,6 +170,15 @@ onBeforeUnmount(() => {
       </span>
       <span>· 输出 {{ formatTokens(msg.stats.outputTokens) }}</span>
     </p>
+    <!-- 被打断的那一轮：贴「已中断」（对齐 dashboard 的 `· interrupted`），已输出的正文保留 -->
+    <p
+      v-if="msg.interrupted"
+      data-testid="msg-interrupted"
+      class="mt-2 text-[11px] leading-5 text-amber-600 dark:text-amber-400"
+      title="这一轮被您打断（或服务端取消），已输出的内容保留"
+    >
+      · 已中断
+    </p>
     <p
       v-if="msg.error"
       class="mt-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/50 dark:text-red-300"

@@ -19,7 +19,7 @@ import {
   renameSession as renameSessionApi,
   streamChat,
 } from '../api/hermes'
-import { approveRun, getRun, runEvents, stopRun, submitRun } from '../api/runs'
+import { approveRun, getRun, runEvents, steerRun, stopRun, submitRun } from '../api/runs'
 import { argPreview, isCompactionNote, toolFailed } from '../lib/messages'
 import { readContextUse, writeContextUse } from '../lib/context-cache'
 // v2.2 后台/断线恢复：页面生命周期信号 + 退避间隔（见文件下半部分的 resumeSync）
@@ -46,6 +46,12 @@ export interface UiMessage {
   streaming?: boolean
   /** 该条消息级别的错误 */
   error?: string | null
+  /**
+   * 这一轮被**用户打断**（点了暂停）或服务端取消（run.cancelled）→ 界面上贴「已中断」，
+   * 已输出的正文保留不清（对齐 dashboard 的 `· interrupted`）。
+   * 只认"被打断"，不把"流丢了没收到终止事件"（网络类）也算进来。
+   */
+  interrupted?: boolean
   /** 该轮的统计（仅助手消息、且本轮成功结束时才有） */
   stats?: TurnStats
   /**
@@ -876,6 +882,8 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
       ctx.sawTerminal = true
       const p = data as SseRunCompleted
       ctx.usage = p.usage ?? null
+      // pending_steer（服务端把"补充落晚了、没赶上工具批次"的那句话回传）：**故意忽略** ——
+      // 用户 2026-09-15 定的口径是"不重发、也不提示"（单人使用，可接受）。别当遗漏去"修"。
       // 注意：payload.messages 是整轮 transcript（含工具结果），只用来捞"被安全闸门
       // 拦下"的原文，绝不渲染成聊天消息（会与正文重复）。
       // runs 通道没有这个字段 → 由轮末 reconcileTurn() 从会话里捞。
@@ -907,8 +915,11 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
     }
     case 'run.started':
     case 'message.started':
-    case 'run.steered':
     case 'done':
+      break
+    case 'run.steered':
+      // 服务端确认"补充已接受"。按 2026-09-15 用户口径**不做额外展示**（那句补充本身已作为
+      // 一条普通用户气泡显示），所以此处是空处理 —— 不是遗漏。
       break
     default:
       // 未知事件忽略（服务端将来新增事件不能让界面崩）
@@ -1305,6 +1316,51 @@ export function stop(): void {
   abortCtl?.abort()
 }
 
+/**
+ * 运行中能不能用「发送」来补充信息（输入框据此决定按钮是「发送」还是「暂停」）。
+ *
+ * 判据（2026-09-15 用户定的相位规则）：
+ *  - 只有 `runs` 通道能补（`/v1/runs/{id}/steer` 只在这条通道上）
+ *  - 可补的相位＝思考 / 调工具 / 等审批 / 后台还在跑；
+ *    **正文已在输出时不补**（那时按钮是「暂停」—— 正文输出期 steer 的注入点碰不上）
+ *  - 必须拿得到 run_id（后台态的 run_id 从 localStorage 的活跃记录里取）
+ */
+export function canSteer(): boolean {
+  if (sendTransport() !== 'runs') return false
+  const ph = store.run.phase
+  if (ph !== 'thinking' && ph !== 'tool' && ph !== 'approval' && ph !== 'background') return false
+  return Boolean(store.run.runId ?? readActiveRun()?.runId ?? null)
+}
+
+/**
+ * 补充信息：往**正在跑**的那一轮里插一句话（不打断工具、也不新开一轮）。
+ *
+ * 服务端口径（实测 2026-09-15）：文本被挂到"最近一条工具结果"的末尾，模型下一次迭代就能看到；
+ * **调工具前那段正文不会被丢**（它作为带 tool_calls 的 assistant 消息已在历史里）。
+ * 本轮若没有工具批次可挂，服务端把它随 `run.completed.pending_steer` 回传 —— 按用户口径忽略。
+ *
+ * 显示：服务端接受了才把它作为一条**普通用户消息**插进列表（用户 2026-09-15 拍板：不留标记）。
+ * ⚠️ 已知取舍：它在服务端不是独立消息（被并进工具结果），所以**刷新/换设备后不会再以"您的消息"
+ * 出现**。用户明确接受，别自作主张改成"未入库"提示。
+ *
+ * 为什么不用"再 POST /v1/runs 一次"模拟：实测（2026-09-15）那会在同一会话里**并发**跑第二条 run
+ * （两条都 running），历史落库顺序会交叉 —— 所以补充只能用 steer。
+ */
+export async function steer(text: string): Promise<void> {
+  const content = text.trim()
+  if (!content || !canSteer()) return
+  const runId = store.run.runId ?? readActiveRun()?.runId ?? null
+  if (!runId) return
+  try {
+    await steerRun(runId, content)
+  } catch {
+    // 409 `run_not_accepting_steer` = 这一轮刚好收尾（steer 只在 running 时被接受）。
+    // 按用户口径静默忽略：不留一条"其实没送进去"的气泡，也不弹提示。
+    return
+  }
+  store.messages.push({ key: tempKey(), role: 'user', content })
+}
+
 /** 从整轮 transcript 里找出第一条"被安全闸门拦下"的工具结果。 */
 function blockFromMessages(messages?: HermesMessage[]): SecurityBlock | null {
   for (const m of messages ?? []) {
@@ -1465,6 +1521,9 @@ export async function send(text: string): Promise<void> {
       // 被服务端取消（run.cancelled）或用户点过停止 → 一律算中断。
       store.run.phase = ctx.cancelled || stopRequested || !ctx.sawTerminal ? 'aborted' : 'done'
     }
+    // 被打断的那一轮贴「已中断」标记（对齐 dashboard 的 `· interrupted`）；
+    // 只认"用户点了暂停"或"服务端取消了"，不把"流丢了但服务端还在跑"算进来。
+    if (ctx.cancelled || stopRequested) asst.interrupted = true
 
     if (stillRunning && !stopRequested) {
       // ★ 服务端那一轮还在跑：界面必须如实说"还在后台执行"，而不是"中断"。

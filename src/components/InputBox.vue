@@ -1,9 +1,17 @@
 <script setup lang="ts">
 /**
- * 输入框。
+ * 输入框。按钮与 Enter 的行为**按当前相位分派**（2026-09-15 用户定的规则）：
+ *
+ *   | 相位 | 按钮 | 点它 / Enter |
+ *   | --- | --- | --- |
+ *   | 思考 / 调工具 / 等审批 / 后台在跑 | 「发送」（旁边另有次要「暂停」） | **补充信息**（steer：不打断工具、不新开一轮） |
+ *   | 正在输出正文（writing） | 「暂停」 | 中断这一轮；Enter **不提交**（静默，防误触打断输出） |
+ *   | 没在跑 | 「发送」 | 开新的一轮 |
+ *
  *  - Enter 发送 / Shift+Enter 换行
  *  - 中文输入法合成期间（composing / isComposing）绝不发送，否则拼音候选回车会误发
- *  - 生成中不禁用输入（可以继续打字），只把发送按钮换成"停止"
+ *  - 生成中不禁用输入（可以继续打字）
+ *  - `stream` 回退通道没有 steer 端点 → 只给「暂停」，并在下方注明不支持补充
  *
  * 布局（v1.4 改，对齐 ChatGPT）：**文字区与按钮上下两段，不并排**。
  *   ┌───────────────────────────────┐
@@ -15,7 +23,7 @@
  * 以后加语音/附件等按钮，一律放这条工具行里（左侧 justify-between 即可）。
  */
 import { computed, nextTick, ref } from 'vue'
-import { send, stop, store } from '../stores/chat'
+import { canSteer, send, sendTransport, steer, stop, store } from '../stores/chat'
 
 const text = ref('')
 const el = ref<HTMLTextAreaElement | null>(null)
@@ -108,22 +116,37 @@ function autoGrow(): void {
 
 function submit(): void {
   const v = text.value
-  // background = 上一轮还在服务端跑（页面刚从后台回来/连接断过）：同样不许开新的
-  if (!v.trim() || busy.value) return
+  if (!v.trim()) return
+  // 正文正在输出：按钮是「暂停」，Enter 不提交（静默 —— 用户 2026-09-15 选的乙口径）
+  if (mode.value === 'stop') return
   text.value = ''
   histIdx.value = null // 发出去的这句成了最新历史；下次 ↑ 从它开始
   draft = ''
   void nextTick(autoGrow)
-  void send(v)
+  if (mode.value === 'steer') void steer(v) // 补充：插进正在跑的那一轮
+  else void send(v) // 新的一轮
 }
 
 /**
  * "忙"的两种形态（v2.2）：
  *  - streaming：本页正连着事件流
  *  - background：本地流已经断了，但**服务端那一轮还在跑**
- * 两种情况都必须让"停止"可用 —— 用户在任何状态下都该能取消这一轮。
+ * 两种情况都必须让"暂停"可用 —— 用户在任何状态下都该能取消这一轮。
  */
 const busy = computed(() => store.streaming || store.run.phase === 'background')
+
+/**
+ * 按钮语义（按相位分派，2026-09-15 用户口径）：
+ *  - `steer`：跑着且能补充（思考 / 调工具 / 等审批 / 后台在跑）→ 按钮是「发送」= 补充
+ *  - `stop` ：忙但不能补（正文正在输出 / stream 通道 / 拿不到 run_id）→ 按钮是「暂停」
+ *  - `send` ：没在跑 → 按钮是「发送」= 新的一轮
+ */
+const mode = computed<'send' | 'steer' | 'stop'>(() =>
+  canSteer() ? 'steer' : busy.value ? 'stop' : 'send',
+)
+
+/** stream 回退通道（没有 steer 端点）：忙时只能暂停，界面注明一句，免得用户以为坏了 */
+const steerUnsupported = computed(() => busy.value && sendTransport() !== 'runs')
 
 function onKeydown(e: KeyboardEvent): void {
   // ↑/↓ 翻历史（像 shell）：被消费了就拦掉原生滚动/光标移动
@@ -169,14 +192,29 @@ defineExpose({ fill })
 
       <!-- 工具行：所有按钮都在这一行，文字区因此可以占满整宽 -->
       <div class="flex items-center justify-end gap-1 pt-1">
+        <!--
+          忙且能补充时，「发送」（=补充）是主按钮，但**保留一个次要「暂停」**：
+          v2.2 立的不变式是"用户在任何状态下都能取消这一轮"—— 工具可能跑很久，
+          若这一刻只剩「发送」，用户就没法中断了。用户 2026-09-15 定的规则只说了
+          "正文输出期按钮必须是暂停"，没说"别的相位不能暂停"，所以两者并存。
+        -->
         <button
-          v-if="busy"
+          v-if="mode === 'steer'"
           type="button"
-          class="rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white transition hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
-          :title="store.streaming ? '停止本轮' : '取消后台执行中的这一轮'"
+          class="rounded-xl border border-gray-300 px-3 py-1.5 text-sm text-gray-600 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+          title="中断本轮"
           @click="stop()"
         >
-          停止
+          暂停
+        </button>
+        <button
+          v-if="mode === 'stop'"
+          type="button"
+          class="rounded-xl bg-gray-900 px-3 py-1.5 text-sm text-white transition hover:bg-gray-700 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+          :title="store.streaming ? '中断本轮（正文输出中）' : '中断后台执行中的这一轮'"
+          @click="stop()"
+        >
+          暂停
         </button>
         <button
           v-else
@@ -190,6 +228,7 @@ defineExpose({ fill })
       </div>
     </div>
     <p class="mt-1.5 text-center text-[11px] text-gray-400 dark:text-gray-500">
+      <template v-if="steerUnsupported">当前通道不支持补充信息（只能暂停本轮） · </template>
       刷新/切后台不会取消任务（回来会自动同步） · Enter 发送 / Shift+Enter 换行
     </p>
   </div>

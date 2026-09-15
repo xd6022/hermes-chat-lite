@@ -93,7 +93,8 @@ const label = computed(() => {
       // 完成后的数字（耗时/token/缓存）在消息下方常驻显示，这里不重复
       return '完成'
     case 'aborted':
-      return '回复中断（未收到 run.completed）'
+      // 不暴露内部事件名（用户 2026-09-15 要求）；措辞与消息上的「已中断」标记一致
+      return '已中断这一轮'
     case 'error':
       return `出错：${r.errorMessage ?? '未知错误'}`
     default:

@@ -15,7 +15,6 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearBootError, loadEarlier, loadModelInfo, loadSessions, openSession, store } from '../stores/chat'
-import { formatCompactTokens, formatPercent } from '../lib/format'
 import { followUntilSettled } from '../lib/scroll-anchor'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
@@ -23,32 +22,13 @@ import ContextGauge from './ContextGauge.vue'
 import InputBox from './InputBox.vue'
 
 const scroller = ref<HTMLElement | null>(null)
-/** 消息区整块内容（含"加载更早"行与"会话累计"行）：ResizeObserver 盯它 */
+/** 消息区整块内容（含"加载更早"行）：ResizeObserver 盯它 */
 const contentRef = ref<HTMLElement | null>(null)
 const inputRef = ref<InstanceType<typeof InputBox> | null>(null)
 const stick = ref(true)
 /** 打开会话后的"锚定窗口"：期间无视 80px 阈值，内容长多少跟多少 */
 const pendingAnchor = ref(false)
 let ro: ResizeObserver | null = null
-
-/**
- * 会话累计那一行的文案（与每轮那行**同一算法**，只是不做差）：
- *   输入合计 = 累计未命中缓存 + 累计命中缓存
- *   缓存命中率 = 命中 / 输入合计
- * 返回 null = 没有累计（请求失败/新会话）→ 那行不显示，绝不编数字。
- */
-const totals = computed(() => {
-  const t = store.totals
-  if (!t) return null
-  const inputTotal = t.inputTokens + t.cacheReadTokens
-  const rate = inputTotal > 0 ? t.cacheReadTokens / inputTotal : null
-  return {
-    input: formatCompactTokens(inputTotal),
-    cache: rate === null ? '—' : formatPercent(rate),
-    output: formatCompactTokens(t.outputTokens),
-    tools: t.toolCalls,
-  }
-})
 
 /**
  * 划到顶部这个距离内就自动加载更早的历史（滚轮/触摸都一样触发）。
@@ -257,19 +237,6 @@ function retry(): void {
           <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
         </div>
 
-        <!--
-          会话累计（v2.4）：逐轮明细只在刚跑完那一轮可见（那些数字是客户端用会话累计
-          做差算出来的，Hermes 不落库 per-turn usage），所以切走/刷新后只能看累计。
-          放在列表末尾：不占常驻空间，也不跟状态条打架。
-        -->
-        <p
-          v-if="totals"
-          data-testid="session-totals"
-          class="mt-8 text-center text-[11px] leading-5 text-gray-400 dark:text-gray-500"
-        >
-          本会话累计 · 输入 {{ totals.input }}（缓存命中 {{ totals.cache }}）· 输出 {{ totals.output }} · 工具
-          {{ totals.tools }} 次
-        </p>
       </div>
     </div>
 

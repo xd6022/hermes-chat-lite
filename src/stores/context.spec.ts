@@ -1,12 +1,13 @@
 /**
- * 上下文水位（输入框上方那一行）的数据链路。
+ * 输入框上方那行（模型 / 窗口上限 / 本轮输入合计）的数据链路。
  *
  * 三个数字三个来源，这里锁住"谁来填、什么时候填、填不到怎么办"：
  *  - 模型：会话行 session.model（counters() 顺手带回来）
  *  - 上限：`/api/model-info`（dashboard 后端，经 nginx 转发）→ effective_context_length
- *  - 占用：本轮 run.completed 的 usage.input_tokens（= dashboard 的 last_prompt_tokens）
+ *  - 本轮输入合计：本轮 run.completed 的 usage.input_tokens = **该轮内每次 API 调用 prompt 之和**
+ *    （服务端不提供"当前上下文占用"，所以这个值**不能**拿去算水位百分比 —— 2026-09-15 查实的 bug）
  *
- * 另外锁住 ⓐ 口径：占用值 Hermes 不落库 → 写进 localStorage，重开页面标"上次已知"。
+ * 另外锁住 ⓐ 口径：Hermes 不落库这个值 → 写进 localStorage，重开页面标"上次已知"。
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as ChatModule from './chat'
@@ -87,8 +88,8 @@ beforeEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('上下文水位（模型 / 上限 / 占用）', () => {
-  it('轮末用 usage.input_tokens 记下占用，并写进本地缓存（ⓐ 刷新后还能看）', async () => {
+describe('输入框上方那行（模型 / 窗口上限 / 本轮输入合计）', () => {
+  it('轮末用 usage.input_tokens 记下本轮输入合计，并写进本地缓存（ⓐ 刷新后还能看）', async () => {
     stub(true)
     const mod = await freshModule()
     mod.store.currentId = 's1'
@@ -98,36 +99,36 @@ describe('上下文水位（模型 / 上限 / 占用）', () => {
 
     expect(mod.store.context.limit).toBe(1_000_000)
     expect(mod.store.context.model).toBe('deepseek-flash') // 从会话行顺手拿的
-    expect(mod.store.context.used).toBe(407_700)
+    expect(mod.store.context.turnInput).toBe(407_700)
     expect(mod.store.context.stale).toBe(false)
     expect(mod.store.context.at).toBeGreaterThan(0)
     // ⓐ 本地缓存（按会话存）
-    expect(JSON.parse(localStorage.getItem('hcl.ctx.s1') ?? '{}')).toMatchObject({ used: 407_700 })
+    expect(JSON.parse(localStorage.getItem('hcl.ctx.s1') ?? '{}')).toMatchObject({ turnInput: 407_700 })
   })
 
-  it('重开页面/切回会话：从本地缓存恢复占用并标"上次已知"', async () => {
-    localStorage.setItem('hcl.ctx.s1', JSON.stringify({ used: 321_000, at: 1_700_000_000_000 }))
+  it('重开页面/切回会话：从本地缓存恢复本轮输入合计并标"上次已知"', async () => {
+    localStorage.setItem('hcl.ctx.s1', JSON.stringify({ turnInput: 321_000, at: 1_700_000_000_000 }))
     stub(true)
     const mod = await freshModule()
 
     await mod.openSession('s1')
 
-    expect(mod.store.context.used).toBe(321_000)
+    expect(mod.store.context.turnInput).toBe(321_000)
     expect(mod.store.context.stale).toBe(true)
     expect(mod.store.context.at).toBe(1_700_000_000_000)
   })
 
-  it('切到另一个会话：不带上一个会话的占用（不串台）', async () => {
-    localStorage.setItem('hcl.ctx.s1', JSON.stringify({ used: 321_000, at: 1 }))
+  it('切到另一个会话：不带上一个会话的值（不串台）', async () => {
+    localStorage.setItem('hcl.ctx.s1', JSON.stringify({ turnInput: 321_000, at: 1 }))
     stub(true)
     const mod = await freshModule()
 
     await mod.openSession('s1')
-    expect(mod.store.context.used).toBe(321_000)
+    expect(mod.store.context.turnInput).toBe(321_000)
 
     // s2 没有缓存 → 清空成"未知"，而不是留着 s1 的数字
     await mod.openSession('s2')
-    expect(mod.store.context.used).toBeNull()
+    expect(mod.store.context.turnInput).toBeNull()
     expect(mod.store.context.stale).toBe(false)
   })
 
@@ -140,20 +141,20 @@ describe('上下文水位（模型 / 上限 / 占用）', () => {
     await mod.send('hi')
 
     expect(mod.store.context.limit).toBeNull()
-    // 占用照常记录（它跟分母是两条独立的路）
-    expect(mod.store.context.used).toBe(407_700)
+    // 本轮输入合计照常记录（它跟分母是两条独立的路）
+    expect(mod.store.context.turnInput).toBe(407_700)
   })
 
-  it('usage 里没有 input_tokens（异常轮）→ 不覆盖已有水位', async () => {
+  it('usage 里没有 input_tokens（异常轮）→ 不覆盖上一轮的值', async () => {
     stub(true)
     const mod = await freshModule()
     mod.store.currentId = 's1'
-    mod.store.context.used = 123_456
+    mod.store.context.turnInput = 123_456
 
     await mod.send('hi') // 这个桩返回的 usage 有值，先确认正常路径
-    expect(mod.store.context.used).toBe(407_700)
+    expect(mod.store.context.turnInput).toBe(407_700)
 
-    // 再来一轮，usage 空 → 保持上一轮的水位（不写成 0）
+    // 再来一轮，usage 空 → 保持上一轮的值（不写成 0）
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
@@ -167,6 +168,6 @@ describe('上下文水位（模型 / 上限 / 占用）', () => {
       }),
     )
     await mod.send('再来一轮')
-    expect(mod.store.context.used).toBe(407_700)
+    expect(mod.store.context.turnInput).toBe(407_700)
   })
 })

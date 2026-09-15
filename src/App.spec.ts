@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import App from './App.vue'
+import { store } from './stores/chat'
 
 afterEach(() => {
   // 主题/折叠都会写 localStorage 和 <html class>，跨用例必须清干净
   localStorage.clear()
   document.documentElement.classList.remove('dark')
   document.documentElement.style.colorScheme = ''
+  // v2.12：地址是状态的一部分 —— 用例之间必须复位，否则下一个用例会"启动就进某个会话"
+  window.history.replaceState(null, '', '/')
 })
 
 /** 真实的一次会话：含 tool 消息与空 assistant（工具调用轮），都被过滤掉 */
@@ -211,5 +214,163 @@ describe('App 集成', () => {
     expect(text).toContain('接口密钥无效或未注入')
     expect(text).toContain('重试')
     expect(w.find('header').text()).toContain('未连接')
+  })
+})
+
+/**
+ * 地址即状态（v2.12）—— 用户 2026-09-15 拍板：地址栏决定打开哪个会话。
+ *
+ * 这一组锁的是"地址 ↔ 视图"的四条硬口径：
+ *   ① 地址里有会话 → 启动就进它（刷新恢复会话靠这条）
+ *   ② 裸域名 → 欢迎页（**永不偷偷跳回上次会话**）
+ *   ③ 地址里的会话不存在 → 回欢迎页 + 轻提示 + 地址清干净（不叠常驻红字横幅）
+ *   ④ 「新对话」→ 清地址回欢迎页，且**不预建空会话**
+ * 另外两条行为（点侧栏进历史、返回键跟着地址走）也在这一组里。
+ */
+describe('地址即状态（v2.12）', () => {
+  const SESSION_2 = {
+    id: 's2',
+    source: 'tui',
+    title: '另一个会话',
+    started_at: 1789123400.0,
+    last_active: 1789123400.0,
+    message_count: 1,
+  }
+  const MESSAGES_2 = [
+    { id: 9, session_id: 's2', role: 'user', content: '第二个会话的消息', timestamp: 9 },
+  ]
+
+  beforeEach(() => {
+    window.history.replaceState(null, '', '/')
+    /*
+     * ⚠️ 同一个 spec 文件里 `store` 是**模块级单例**：上面那组用例点过会话行，会留下
+     * `currentId = 's1'` 与已加载的消息。不清掉的话，本组里"启动就进某个会话"这类断言
+     * 会**因为残留状态而假通过**（RED 阶段实测撞到过：还原源文件后它照样绿）。
+     */
+    store.currentId = null
+    store.messages = []
+    store.sessions = []
+    store.bootError = null
+    store.streaming = false
+    store.run.phase = 'idle'
+    store.run.timeline = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url === '/health') return json({ status: 'ok', platform: 'hermes-agent', version: '0.20.4' })
+        if (url.startsWith('/api/sessions?'))
+          return json({ object: 'list', data: [SESSION_ROW, SESSION_2], limit: 50, offset: 0, has_more: false })
+        if (url.includes('/s1/messages?'))
+          return json({
+            object: 'list',
+            session_id: 's1',
+            data: RAW_MESSAGES,
+            pagination: { limit: 100, offset: 0, order: 'latest', returned: 4 },
+          })
+        if (url.includes('/s2/messages?'))
+          return json({
+            object: 'list',
+            session_id: 's2',
+            data: MESSAGES_2,
+            pagination: { limit: 100, offset: 0, order: 'latest', returned: 1 },
+          })
+        // 不存在的会话：实测口径是 404 + code=session_not_found（2026-09-15 量过）
+        if (url.startsWith('/api/sessions/ghost'))
+          return new Response(
+            JSON.stringify({ error: { message: 'Session not found: ghost', code: 'session_not_found' } }),
+            { status: 404, headers: { 'Content-Type': 'application/json' } },
+          )
+        if (url.startsWith('/api/model-info')) return json({})
+        if (url.startsWith('/api/sessions/')) return json({ object: 'list', data: [] })
+        throw new Error(`未预期的请求: ${url} ${init?.method ?? 'GET'}`)
+      }),
+    )
+  })
+
+  /** 助手消息是 rAF 节流渲染的，等等帧 */
+  async function waitText(w: ReturnType<typeof mount>, needle: string): Promise<void> {
+    await vi.waitFor(() => expect(w.find('section').text()).toContain(needle), { timeout: 3000 })
+  }
+
+  it('★ 地址里有会话 → 启动就进那个会话（刷新恢复会话靠的就是这一步）', async () => {
+    window.history.replaceState(null, '', '#/s/s1')
+    const w = mount(App)
+    await flushPromises()
+
+    await waitText(w, '读到了')
+    expect(w.find('section').text()).not.toContain('有什么可以帮您？')
+    expect(window.location.hash).toBe('#/s/s1') // 地址不动（刷新语义：还在原地）
+  })
+
+  it('★ 地址是裸域名 → 欢迎页（不偷偷跳回上次打开的会话）', async () => {
+    const w = mount(App)
+    await flushPromises()
+
+    expect(w.find('section').text()).toContain('有什么可以帮您？')
+    expect(window.location.hash).toBe('')
+  })
+
+  it('★ 地址里的会话不存在 → 回欢迎页 + 5 秒轻提示 + 地址清干净（不留坏地址）', async () => {
+    window.history.replaceState(null, '', '#/s/ghost')
+    const w = mount(App)
+    await flushPromises()
+    await flushPromises()
+
+    expect(w.find('section').text()).toContain('有什么可以帮您？')
+    expect(window.location.hash).toBe('') // 地址回到裸域名
+    const notice = w.find('[data-testid="notice"]')
+    expect(notice.exists()).toBe(true)
+    expect(notice.text()).toBe('该会话不存在，请重新创建')
+    // 这条信息由轻提示表达，别再叠一条常驻红字横幅（用户口径：别两种提示并存）
+    expect(w.find('[data-testid="boot-error"]').exists()).toBe(false)
+  })
+
+  it('★ 点侧栏另一个会话：进历史一步（返回键才有东西可回）+ 真的打开它', async () => {
+    window.history.replaceState(null, '', '#/s/s1')
+    const w = mount(App)
+    await flushPromises()
+    await waitText(w, '读到了')
+    const before = window.history.length
+
+    const btn = w.findAll('aside button').find((b) => b.text().includes('另一个会话'))
+    expect(btn).toBeTruthy()
+    await btn!.trigger('click')
+    await flushPromises()
+
+    expect(window.location.hash).toBe('#/s/s2')
+    expect(window.history.length).toBe(before + 1) // push 而不是 replace
+    await waitText(w, '第二个会话的消息')
+  })
+
+  it('★ 返回键/前进（popstate）→ 视图跟着地址走', async () => {
+    window.history.replaceState(null, '', '#/s/s1')
+    const w = mount(App)
+    await flushPromises()
+    await waitText(w, '读到了')
+
+    // 模拟浏览器把地址改回 s2 并派发 popstate（返回/前进键就是这条路径）
+    window.history.replaceState(null, '', '#/s/s2')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await flushPromises()
+
+    await waitText(w, '第二个会话的消息')
+  })
+
+  it('★ 点「新对话」：清地址回欢迎页，且**不预建空会话**（侧栏不再堆 0 消息空壳）', async () => {
+    window.history.replaceState(null, '', '#/s/s1')
+    const w = mount(App)
+    await flushPromises()
+    await waitText(w, '读到了')
+
+    await w.find('aside button[aria-label="新对话"]').trigger('click')
+    await flushPromises()
+
+    expect(window.location.hash).toBe('')
+    expect(w.find('section').text()).toContain('有什么可以帮您？')
+    const posts = (globalThis.fetch as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) =>
+      String(c[0]),
+    )
+    expect(posts.filter((u) => u === '/api/sessions')).toEqual([]) // 没有 POST 建会话
   })
 })

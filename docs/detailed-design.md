@@ -38,6 +38,7 @@
 | P23 发送按钮按相位分派（v2.9，`feat/phase-dispatch-steer`，PR #17） | ✅ 完成并部署（2026-09-15） | `chat.ts` 新增 `canSteer()`/`steer()`/`UiMessage.interrupted`；`InputBox.vue` 按钮与 Enter **按相位分派**（思考/调工具期=补充，正文输出期=暂停且 Enter 静默）；`MessageItem.vue` 贴「已中断」；`RunStatus.vue` 文案改「已中断这一轮」 | 单测 **238** + **RED/GREEN（15 条新断言全红）** + `vite build` + **真浏览器端到端（打真模型真工具）**：工具期按钮 `["暂停","发送"]`、点发送后补充气泡可见（轮末仍在）、本轮输出含 `STEER_OK`（证明模型真按补充执行）、工具期点暂停 → `phase=aborted` + 贴「已中断」；插消息端点口径见坑 53 |
 | P24 静态资源"缺文件"真 404 加固（v2.10，同 `feat/phase-dispatch-steer`） | 🟡 代码完成，**待重建镜像验证** | `nginx.conf` 加根层后缀 location（`try_files $uri =404`）+ `Dockerfile` 加构建期断言（`test -f dist/{index.html,favicon.svg,favicon.ico,apple-touch-icon.png}` + `test -d dist/assets`） | 后缀正则语义 18/18 + 断言 **RED/GREEN**（模拟漏拷 `public/`、产物无 `assets/` 均按预期失败）+ **真 nginx 解析器 crossplane `status: ok` / 0 错**；行为验收（缺文件回 404 而非 200 HTML）需重建镜像后按 §8.4 的 curl 两条 |
 | P25 按时间交错渲染（v2.11，`feat/interleaved-render`） | 🟡 代码完成，**待合并部署** | `UiMessage.kind`（`text`/`tools`）+ `normalize()` 改为按时间切段 + `prependEarlier()` 只在同 kind 合并 + `TurnCtx.segs` 与 `openTextSeg/sealTextSeg/toolsSegFor/replaceTurnSegs`（流式期即交错、轮末用 transcript 整批重建）+ 新 `lib/turns.ts`（按轮分组）+ `MessageItem` 删折叠开关、工具行改常驻小字行 + `ChatWindow` 按轮渲染（轮内 `space-y-2`／轮间 `mt-6`） | 单测 **245**（新增 `lib/turns.spec.ts` 5 条、改写 12 条旧断言）+ **RED/GREEN（还原 3 个源文件 → 12 条核心断言全红）** + `vite build`（`工具调用 (` 0 命中）+ **真浏览器**：段序与服务端 transcript **逐轮完全一致**（11/11）、工具行 0 折叠开关且全部可见、轮内 8px < 轮间 24px、实时一轮中途即 `text→tools` 跑完 `text→tools→text`、滚动锚定无回归（落底 距底 0、上滚不被拽回）。详见 §5.13 |
+| P26 地址即状态（v2.12，`feat/url-as-state`） | ✅ 完成（2026-09-15，待部署） | 新 `lib/route.ts`（手写 hash 路由，不引 vue-router）+ `Notice.vue`（5 秒自动消失/点击即消失）+ `App.vue` 的 `applyRoute()`（**打开会话的唯一入口**）+ `Sidebar` 改走导航（点行 push、「新对话」不再预建空会话）+ `chat.ts`（`openSession` 返回 `{ok,missing}`、新增 `goHome()`、`resumeSync` 不再自动切会话） | 单测 **269**（新增 `route.spec` 11 + `Notice.spec` 5 + `App.spec` 地址组 6，改写 `resume.spec` 3 条旧口径）+ **RED/GREEN（还原 3 个源文件 → 7 条新断言全红）** + `vite build` + **真浏览器 9/9**：刷新落原会话 / 切到 B 再刷新落 B / 返回键回 A / 无效 id → 欢迎页+裸域名+提示（5 秒消失、点击即消失）/「新对话」不新建空会话 / 跑着时切会话地址撤回不打断、刷新后接上（`phase=background`）；`pageerror` 无。详见 §5.14 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -881,6 +882,7 @@ docker compose exec -T "$SVC" sh -c 'wget -qO- http://127.0.0.1<bundle> | grep -
 | v2.7 水位行口径 | `本轮输入合计`（旧字样 `本会话累计` / `缓存命中` 必须为 **0**） |
 | v2.9 相位分派 | `当前通道不支持补充信息`、`已中断这一轮` |
 | v2.10 静态资源加固 | 无前端文案 → 改用 `/nope.svg` 是否 **404** 判断（见 §8.4） |
+| v2.12 地址即状态 | `该会话不存在，请重新创建`（且 `#/s/` 字样为 1） |
 
 **实测示例（2026-09-15，PR #17 已合并但未重建时）**：bundle 仍是 `index-CarQVqMx.js`，
 `本轮输入合计`=1、`已中断这一轮`=0、`当前通道不支持补充信息`=0 ⟹ **"合并了但没发布"**，
@@ -1110,6 +1112,31 @@ A/B 与 main 产物行为一致，见坑 61）。
 ---
 
 ## 12. 已知坑（开发时逐条对照）
+### 5.14 地址即状态（v2.12 追加）
+
+**一句话**：`#/s/<id>` = 打开该会话；裸域名 = 欢迎页（输入第一条消息才建会话）；
+地址里的 id 不存在 → `replace` 回裸域名 + 一句 5 秒自动消失的提示。**打开会话只有"地址变化"这一个入口。**
+
+为什么做（用户 2026-09-15 实测提出）：打开会话后刷新页面会回到空白欢迎页。查证结论是"一半刻意、一半漏做" ——
+v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openSession`）"，普通刷新没做恢复。地址承载会话 id 之后，
+刷新、书签、多标签、把链接发到手机打开都自然成立，浏览器返回键也第一次有了正确语义。
+
+| 载体 | 位置 | 说明 |
+| --- | --- | --- |
+| 解析/导航 | `src/lib/route.ts` | `parseRoute()` 纯函数；`navigate(id \| null, {push\|replace})`；`onRouteChange()`（同听 `popstate` + `hashchange`，用"最后分发过的路由"去重）；`markInitialRoute()` |
+| 唯一入口 | `App.vue` 的 `applyRoute()` | 启动按地址进入；订阅地址变化。侧栏/返回键/手改地址/外链走的都是它 |
+| 提示 | `src/components/Notice.vue` | 5 秒自动消失 + 点击立即消失（`ms` 可调，下限 1 秒） |
+| 状态收紧 | `chat.ts` | `openSession()` 返回 `{ok:true} \| {ok:false, missing}`；新增 `goHome()`；`resumeSync()` **只在你打开的就是那条在跑的会话时才接上** |
+
+**四条硬口径**（改这里之前先读）：
+1. `pushState/replaceState` **不触发** `hashchange`/`popstate` ⇒ 自己的导航必须**手动分发**（漏了就表现为"地址变了、画面没变"）。
+2. 欢迎页要把 `#` **整个去掉**（`pathname + search`）；只把 hash 设成空串会留下一个光秃秃的 `#`。
+3. **点侧栏 = push**（返回键能回上一个会话）；**程序自己纠正地址 = replace**（无效 id、生成中撤回）。
+4. **生成中不许切会话**（`openSession` 的守卫）⇒ 路由层把地址**撤回**当前会话，避免"地址 B、画面 A"。
+   「新对话」也**不再预建空会话**（旧行为会堆一堆 0 消息空壳），会话交给 `send()` 懒创建。
+
+**已知限制**：两个标签打开同一会话时互不实时同步（用户已接受）；`hcl.activeRun` 记录保留但**不再用于"打开哪个会话"**。
+
 
 1. **CORS 默认关闭** → 必须同源反代，不要试图在前端直接跨域打 8642。
 2. **key 不能进浏览器产物** → 反代注入 Authorization。
@@ -1214,3 +1241,15 @@ A/B 与 main 产物行为一致，见坑 61）。
    但会让"原本在视口上方一万九千像素"的锚元素相对视口移动整页高度，量出 **19062px** 的第二个假数。
    正确做法：走**真实路径**（把 scrollTop 设 0 触发自动加载），取"此刻视口顶部那条消息"当参照再比（本次 **Δ=0px**）；
    **A/B 对照**（`/opt/data/.verify/review_0915/ab_anchor2.cjs`：main 产物 vs 本次改动）两边行为一致 ⇒ 不是本次引入的回归。
+
+62. **★ "打开会话"只允许有一个入口** → v2.12 之前 `Sidebar.pick()` 直接 `openSession()`，而 `resumeSync()` 也会自己
+   `openSession()`；一旦地址成为状态源，两处入口必然打架（地址 B、画面 A）。改法：所有"打开哪个会话"的意图都变成
+   **改地址**，由 `App.vue` 的 `applyRoute()` 统一落地。**凡是发现同一件事有两处实现，就是下一次 bug 的地址**。
+63. **★ `pushState/replaceState` 不触发任何事件** → 所以自建 hash 路由必须**手动分发**给自己订阅者；
+   同时要听 `popstate`（前进/后退）与 `hashchange`（手改地址/点链接），并用"最后分发过的路由"去重（否则同一次变化分发两遍，
+   表现为"打开会话两次/请求翻倍"）。
+64. **★ 单测里 `store` 是模块级单例：上一个用例的状态会污染下一个** → RED/GREEN 阶段实测撞到：还原源文件后，
+   "地址里有会话 → 启动就进那个会话"这条断言**照样绿**，因为上面那组用例点过会话行、`currentId/messages` 还留着。
+   凡是断言"启动态/空态"的新用例，`beforeEach` 里要显式把 `store` 清干净（`currentId/messages/sessions/run`），
+   否则 RED 阶段会给出**假通过**。（另：探针脚本忘写 `server.listen()` 会得到 `ERR_CONNECTION_REFUSED`，
+   看着像前端崩溃 —— 先查探针自己。）

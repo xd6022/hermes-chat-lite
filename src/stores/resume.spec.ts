@@ -234,9 +234,10 @@ describe('回到前台同步（测试 2/4）', () => {
     expect(storedRecord()).toBeNull()
   })
 
-  it('★ 被系统回收后重开（没选任何会话）→ 自动打开那一轮所在的会话并同步', async () => {
-    // 真机实测（2026-09-13 14:14）就是这一格：页面被回收重建后 currentId 是空的，
-    // 用户不点会话就永远看不到"还在后台执行"
+  it('★ v2.12 口径：没打开任何会话时，resumeSync 是**空操作**（打开哪个会话由地址说了算）', async () => {
+    // 旧口径（v2.2，真机教训 2026-09-13 14:14）是"自动打开那一轮所在的会话"。
+    // 用户 2026-09-15 拍板改成：**地址是唯一真相源** —— 刷新后地址说是哪个会话就是哪个，
+    // 自动跳到另一个会话会让地址与画面打架（刷新一次跳一次）。记录本身保留不删。
     localStorage.setItem(
       'hcl.activeRun',
       JSON.stringify({ sessionId: SID, runId: RUN_ID, sentText: SENT, startedAt: Date.now() }),
@@ -247,9 +248,28 @@ describe('回到前台同步（测试 2/4）', () => {
     statusQueue = [{ run_id: RUN_ID, status: 'running' }]
     await mod.resumeSync()
 
-    expect(mod.store.currentId).toBe(SID) // 自己把会话打开了
-    expect(calls).toContain(`GET /api/sessions/${SID}/messages?order=latest&limit=100&offset=0`)
-    expect(mod.store.run.phase).toBe('background')
+    expect(mod.store.currentId).toBeNull() // 不切会话
+    expect(calls).not.toContain(`GET /api/sessions/${SID}/messages?order=latest&limit=100&offset=0`)
+    expect(storedRecord()).not.toBeNull() // 记录留着：打开那条会话时还要用它接上/停止
+  })
+
+  it('★ v2.12：打开的是**另一个**会话 → 同样什么都不做（别人在跑与我无关）', async () => {
+    localStorage.setItem(
+      'hcl.activeRun',
+      JSON.stringify({ sessionId: 'other_sid', runId: RUN_ID, sentText: SENT, startedAt: Date.now() }),
+    )
+    const mod = await freshRuns()
+    // 用户打开的是 SID（不是记录里那条 other_sid）
+    await mod.openSession(SID)
+    const before = calls.length
+
+    statusQueue = [{ run_id: RUN_ID, status: 'running' }]
+    await mod.resumeSync()
+
+    expect(mod.store.currentId).toBe(SID) // 没被切走
+    expect(mod.store.run.phase).not.toBe('background') // 也没认成"这一轮在后台跑"
+    // 没有为 other_sid 发过任何请求（statusQueue 也没被消费）
+    expect(calls.slice(before).filter((c) => c.includes('other_sid'))).toEqual([])
   })
 
   it('★ 已修复"标签页被回收"：记录换了存储也在（sessionStorage 清空不影响）', async () => {
@@ -270,30 +290,32 @@ describe('回到前台同步（测试 2/4）', () => {
     expect(mod.store.messages.at(-1)?.content).toBe('换上下文后同步到的正文')
   })
 
-  it('记录指向的会话已被删除 → 自动打开失败就把记录清掉（不留死循环）', async () => {
+  it('★ v2.12：记录指向的会话已被删除 → 不打开、不碰记录（由路由层负责"不存在"的落地）', async () => {
+    // 旧口径里"自动打开 → 404 → 清记录"这条链路随自动打开一起去掉了。
+    // 现在"会话不存在"由**路由层**处理（replace 回欢迎页 + 一句轻提示，见 App.vue 的 applyRoute），
+    // 本函数在没打开会话时直接返回 —— 记录留着自然过期（6h），不去猜用户的意图。
     localStorage.setItem(
       'hcl.activeRun',
       JSON.stringify({ sessionId: 'gone', runId: RUN_ID, sentText: SENT, startedAt: Date.now() }),
     )
     const mod = await freshRuns()
-    // 让 messages 返回 404：临时替换 fetch 比给原 stub 加分支更直观
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = String(input)
-        calls.push(`GET ${url}`)
-        if (url.startsWith('/api/sessions/gone/messages')) {
-          return new Response(JSON.stringify({ error: { message: 'not found' } }), {
-            status: 404,
-            headers: { 'Content-Type': 'application/json' },
-          })
-        }
-        return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } })
-      }),
-    )
-
     await mod.resumeSync()
-    expect(storedRecord()).toBeNull() // 记录被清（会话都没了）
+    expect(storedRecord()).not.toBeNull()
+  })
+
+  it('★ v2.12：打开的就是"那一轮所在"的会话 → 仍然接上（能力没丢）', async () => {
+    localStorage.setItem(
+      'hcl.activeRun',
+      JSON.stringify({ sessionId: SID, runId: RUN_ID, sentText: SENT, startedAt: Date.now() }),
+    )
+    const mod = await freshRuns()
+    statusQueue = [
+      { run_id: RUN_ID, status: 'running' },
+      { run_id: RUN_ID, status: 'running' },
+    ]
+    // 用户打开那条会话（地址里就是它）→ 应当认出"这一轮还在后台跑"
+    await mod.openSession(SID)
+    expect(mod.store.currentId).toBe(SID)
   })
 
   it('僵尸流：本地流还挂着但服务端已经结束 → 主动掐断本地流（交给 send() 收尾）', async () => {

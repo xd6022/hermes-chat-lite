@@ -1,77 +1,69 @@
 <script setup lang="ts">
 /**
- * 输入框上方一行：模型 + 上下文水位（照 dashboard 状态栏的读法）
+ * 输入框上方一行：模型 + 窗口上限 + 本轮输入合计。
  *
- *   deepseek-flash │ 407.7k/1m │ [████░░░░░░] 41%
+ *   deepseek-flash │ 窗口 1m │ 本轮输入合计 112.3k
  *
  * 三个数字三个来源（缺哪个就少显示哪段，**绝不编数字**）：
  *  - 模型：会话行 `session.model`（counters() 顺手带回来，不额外请求）
  *  - 上限：dashboard 后端 `/api/model-info` → `effective_context_length`（nginx 转发）
- *  - 占用：本轮最后一次调用的 `usage.input_tokens`（= dashboard 的 last_prompt_tokens）
+ *  - 本轮输入合计：run 结束时那次的 `usage.input_tokens`
  *
- * ⚠️ 占用只有跑完一轮才知道（Hermes 不落库）→ 刷新/切走后若来自本地缓存，标"上次已知"。
- * 水位 ≥80% 转黄、≥95% 转红：一眼看出"快满了，该开新会话了"。
+ * ⚠️ 这一行**不显示"水位/百分比"**（v2.8 改；2026-09-15 查实的口径 bug）：
+ * 服务端那个 `usage.input_tokens` 是 `agent.session_prompt_tokens` —— **该轮内每次 API
+ * 调用的 prompt 累加**，不是"这次请求把多少上下文喂给了模型"。拿它除窗口会得到一个
+ * 荒唐的假水位：一轮 30 次调用累出 2.6m ÷ 1m ⇒ 界面显示 100% 并转红，看着像"上下文爆了"，
+ * 而那一轮**单次最大 prompt 只有 125k（≈12.5%）**。
+ * Hermes 的 HTTP 接口**不提供"当前上下文占用"**（dashboard 状态栏走的是内部管道），
+ * 所以这里只报有真实来源的累计值：不算百分比、不画进度条、不判红。
+ *
+ * 颜色一律灰一档：这行是辅助信息，不抢眼，也不制造告警。
+ * ⚠️ 本值只有跑完一轮才知道（Hermes 不落库）→ 刷新/切走后若来自本地缓存，标"上次已知"。
  */
 import { computed } from 'vue'
 import { store } from '../stores/chat'
 import { formatClock, formatCompactTokens } from '../lib/format'
 
-/** 进度条格数（dashboard 那行是 10 格） */
-const CELLS = 10
-
 const vm = computed(() => {
-  const { model, limit, used, stale, at } = store.context
+  const { model, limit, turnInput, stale, at } = store.context
   const lim = typeof limit === 'number' && limit > 0 ? limit : 0
-  const pct = lim > 0 && used !== null ? Math.min(100, Math.round((used / lim) * 100)) : null
-  const filled = pct === null ? 0 : Math.min(CELLS, Math.round((pct / 100) * CELLS))
 
   return {
-    // 什么都没有（既没模型也没分母也没占用）→ 整行不渲染，不占位
-    show: Boolean(model) || lim > 0 || used !== null,
+    // 什么都没有（既没模型也没分母也没本轮输入）→ 整行不渲染，不占位
+    show: Boolean(model) || lim > 0 || turnInput !== null,
     model: model ?? '',
-    usedText: used === null ? '—' : formatCompactTokens(used),
     limitText: lim > 0 ? formatCompactTokens(lim) : '',
-    pct,
-    bar: pct === null ? '' : '█'.repeat(filled) + '░'.repeat(CELLS - filled),
+    hasTurnInput: turnInput !== null,
+    turnInputText: turnInput === null ? '—' : formatCompactTokens(turnInput),
     // 本地缓存恢复的值：说清"不是刚刚那一刻的数字"，并带上记录时间
     staleNote: stale && at > 0 ? `上次已知 ${formatClock(at / 1000)}` : stale ? '上次已知' : '',
-    tone: pct === null || pct < 80 ? 'dim' : pct >= 95 ? 'danger' : 'warn',
     title:
-      lim > 0
-        ? stale
-          ? '上下文水位（刷新/切走后只能显示上次已知的值；跑完一轮会更新）'
-          : '上下文水位（本轮最后一次调用实际喂给模型的 token 数）'
-        : '上下文窗口上限拿不到（dashboard 后端 /api/model-info 没通）',
+      turnInput === null
+        ? '本轮输入合计：还没跑过带用量的轮次'
+        : stale
+          ? '本轮输入合计（刷新/切走后只能显示上次已知的值；跑完一轮会更新）'
+          : '本轮输入合计 = 这一轮内每次 API 调用的输入之和（Hermes 的 HTTP 接口不提供"当前上下文占用"，所以不显示水位百分比）',
   }
 })
-
-const TONE: Record<string, string> = {
-  dim: 'text-gray-400 dark:text-gray-500',
-  warn: 'text-amber-600 dark:text-amber-500',
-  danger: 'text-red-600 dark:text-red-400',
-}
 </script>
 
 <template>
   <div v-if="vm.show" class="mx-auto w-full max-w-chat px-4 pb-1">
     <div
       data-testid="ctx-gauge"
-      class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] leading-5"
-      :class="TONE[vm.tone]"
+      class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-[11px] leading-5 text-gray-400 dark:text-gray-500"
       :title="vm.title"
     >
       <span v-if="vm.model" data-testid="ctx-model">{{ vm.model }}</span>
       <template v-if="vm.limitText">
         <span class="opacity-50">│</span>
-        <span data-testid="ctx-usage" class="tabular-nums">{{ vm.usedText }}/{{ vm.limitText }}</span>
+        <span data-testid="ctx-limit">窗口 {{ vm.limitText }}</span>
       </template>
-      <template v-if="vm.bar">
+      <template v-if="vm.limitText || vm.hasTurnInput">
         <span class="opacity-50">│</span>
-        <span data-testid="ctx-bar" class="tabular-nums">[{{ vm.bar }}] {{ vm.pct }}%</span>
+        <span data-testid="ctx-turn-input" class="tabular-nums">本轮输入合计 {{ vm.turnInputText }}</span>
       </template>
-      <span v-if="vm.staleNote" data-testid="ctx-stale" class="text-gray-400 dark:text-gray-500">
-        · {{ vm.staleNote }}
-      </span>
+      <span v-if="vm.staleNote" data-testid="ctx-stale">· {{ vm.staleNote }}</span>
     </div>
   </div>
 </template>

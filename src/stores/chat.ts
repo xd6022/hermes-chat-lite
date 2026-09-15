@@ -146,22 +146,16 @@ export interface ToolStep {
   callId?: string
 }
 
-/**
- * 会话**累计**计数（打开历史会话也能看到的那份）。
+/*
+ * 会话**累计**计数的形状（`counters()` 读它、每轮那行统计靠它做差）。
  *
  * 为什么只有累计、没有逐轮：Hermes 不把每轮的 token 用度落库 —— 实测拿一个真实会话
  * 300 条消息，`messages.token_count` **全空**（user/assistant/tool 都是 0 条非空）。
  * 逐轮那行统计是客户端在轮末用"会话累计做差"算出来的，所以切走/刷新后就没了；
  * 而累计值一直存在会话行上，随时可读。
+ *
+ * v2.8：列表末尾那行「本会话累计」按用户要求删掉了 → 这里不再往 store 里存一份。
  */
-export interface SessionTotals {
-  /** 累计【未命中缓存】的输入 */
-  inputTokens: number
-  /** 累计【命中缓存】的输入 */
-  cacheReadTokens: number
-  outputTokens: number
-  toolCalls: number
-}
 
 export const store = reactive({
   /* 连接 */
@@ -182,24 +176,23 @@ export const store = reactive({
   hasMoreHistory: false,
   historyLoading: false,
 
-  /** 当前会话的累计计数（打开历史会话时由 counters() 填；拿不到就是 null → 不显示那行） */
-  totals: null as SessionTotals | null,
-
   /**
-   * 模型 + 上下文水位（输入框上方那一行）。
+   * 模型 + 窗口上限 + 本轮输入合计（输入框上方那一行）。
    *
    * 三个数字三个来源，缺哪个就少显示哪段（绝不编数字）：
    *  - model：会话行（session.model）
-   *  - limit：dashboard 后端 `/api/model-info` 的 effective_context_length（= 状态栏的 `/1m`）
-   *  - used ：本轮最后一次调用的 `usage.input_tokens`（= dashboard 的 last_prompt_tokens）
+   *  - limit：dashboard 后端 `/api/model-info` 的 effective_context_length（= 窗口 1m 那个分母）
+   *  - turnInput：**本轮输入合计** = 该轮内每次 API 调用的 prompt 之和。
+   *    Hermes 的 HTTP 接口只给这个累计值，**「当前上下文占用」它不提供** ——
+   *    2026-09-15 那次"显示上下文爆了"就是拿这个累计值去除窗口（260% ⇒ 假 100%）造成的。
    *
-   * ⚠️ `used` 只有跑完一轮才知道（Hermes 不落库）→ 刷新/切走后从本地缓存恢复并标 `stale`。
+   * ⚠️ `turnInput` 只有跑完一轮才知道（Hermes 不落库）→ 刷新/切走后从本地缓存恢复并标 `stale`。
    */
   context: {
     model: null as string | null,
     limit: null as number | null,
-    used: null as number | null,
-    /** used 是"上次已知"（本地缓存恢复的），不是刚跑完的实时值 */
+    turnInput: null as number | null,
+    /** turnInput 是"上次已知"（本地缓存恢复的），不是刚跑完的实时值 */
     stale: false,
     /** 上次已知值的记录时刻（毫秒；0 = 没有） */
     at: 0,
@@ -550,13 +543,12 @@ export async function openSession(
   // 分页状态必须跟着会话重置，否则会把上一个会话的 offset 用到新会话上
   store.rawCount = 0
   store.hasMoreHistory = false
-  // 累计计数也是"跟着会话走"的：不复位会把上一个会话的数字显示到新会话上
-  store.totals = null
-  // 上下文水位同理；再试着从本地缓存恢复"上次已知"（Hermes 不落库占用值，ⓐ 口径）
+  // 本轮输入合计也是"跟着会话走"的：不复位会把上一个会话的数字显示到新会话上；
+  // 复位后再试着从本地缓存恢复"上次已知"（Hermes 不落库这个值，ⓐ 口径）
   resetContextUse()
   const cachedUse = readContextUse(id)
   if (cachedUse) {
-    store.context.used = cachedUse.used
+    store.context.turnInput = cachedUse.turnInput
     store.context.stale = true
     store.context.at = cachedUse.at
   }
@@ -621,7 +613,6 @@ export async function newChat(): Promise<string | null> {
     loadedIds = new Set()
     store.rawCount = 0
     store.hasMoreHistory = false
-    store.totals = null // 新会话：累计从 0 起（等第一次轮末再读真值）
     resetContextUse() // 新会话没有"上次已知"的占用，等第一轮跑完才有
     clearBootError()
     store.run.phase = 'idle'
@@ -1506,7 +1497,7 @@ export async function send(text: string): Promise<void> {
       })
     }
 
-    // 上下文水位：本轮最后一次调用的 input_tokens = 当前占用（与 dashboard 状态栏同义）
+    // 本轮输入合计：run 结束时那次的 usage.input_tokens（= 该轮内每次 API 调用 prompt 之和）
     rememberContextUse(sid, ctx.usage)
 
     // 新会话首轮结束后 Hermes 才会生成标题，刷新侧栏才能看到
@@ -1522,10 +1513,10 @@ interface Counters {
 }
 
 /**
- * 读会话累计计数；失败返回 null（此时不显示缓存率，耗时与 token 照常显示）。
+ * 读会话累计计数：**每轮那行统计要用它做差**（`buildStats(before, after)`），
+ * 顺手把模型名带回 `store.context.model`（会话行里就有，不用额外请求）。
  *
- * 顺手把累计写进 `store.totals`（消息列表末尾那行"会话累计"用它）：
- * 每次轮末本来就要读一次，不额外加请求；打开历史会话时也调它一次。
+ * 失败返回 null → 那一轮不显示缓存命中率（耗时与 token 照常显示）。
  */
 async function counters(id: string): Promise<Counters | null> {
   try {
@@ -1537,13 +1528,7 @@ async function counters(id: string): Promise<Counters | null> {
       toolCalls: s.tool_call_count ?? 0,
     }
     if (store.currentId === id) {
-      store.totals = {
-        inputTokens: c.input,
-        cacheReadTokens: c.cache,
-        outputTokens: c.output,
-        toolCalls: c.toolCalls,
-      }
-      // 模型名顺手带上（会话行里就有，不用额外请求）
+      // 模型名顺手带上（输入框上方那行要用）
       if (s.model) store.context.model = s.model
     }
     return c
@@ -1572,24 +1557,27 @@ export async function loadModelInfo(): Promise<void> {
 }
 
 /**
- * 记下本轮结束时的上下文占用。
+ * 记下本轮结束时的**输入合计**（不是"当前上下文占用"，两者别混）。
  *
- * 用**最后一次调用的 input_tokens**：它就是"这一次请求把多少上下文喂给了模型"，
- * 与 dashboard 状态栏显示的 `last_prompt_tokens` 同义。顺带存进本地缓存，
- * 好让刷新/切走之后还能看到"上次已知"（ⓐ 口径）。
+ * 服务端给的是 `agent.session_prompt_tokens`：**该轮内每次 API 调用的 prompt 累加**
+ * （`api_server.py::_run_agent` 构造，`conversation_loop.py:4187` 逐次累加）。
+ * 实测 2026-09-15：一轮 4 次调用 27,872+28,054+28,138+28,239 = 112,303 = 服务端回报值。
+ *
+ * ⚠️ 别拿它除上下文窗口当"水位"（历史 bug：一轮 30 次调用累出 2.6m ÷ 1m ⇒ 假的 100%）。
+ * 顺带存进本地缓存，好让刷新/切走之后还能看到"上次已知"（ⓐ 口径）。
  */
 function rememberContextUse(sid: string | null, usage: HermesUsage | null): void {
-  const used = Number(usage?.input_tokens ?? 0)
-  if (!Number.isFinite(used) || used <= 0) return
-  store.context.used = used
+  const turnInput = Number(usage?.input_tokens ?? 0)
+  if (!Number.isFinite(turnInput) || turnInput <= 0) return
+  store.context.turnInput = turnInput
   store.context.stale = false
   store.context.at = Date.now()
-  if (sid) writeContextUse(sid, used, store.context.at)
+  if (sid) writeContextUse(sid, turnInput, store.context.at)
 }
 
-/** 切会话 / 新会话时复位水位（占用是会话级的，不串台） */
+/** 切会话 / 新会话时复位（这个值是会话级的，不串台） */
 function resetContextUse(): void {
-  store.context.used = null
+  store.context.turnInput = null
   store.context.stale = false
   store.context.at = 0
 }

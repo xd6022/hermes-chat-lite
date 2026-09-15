@@ -94,13 +94,11 @@ describe('历史分页', () => {
     await chat.openSession('s1')
 
     await chat.loadEarlier()
-    // 注意：openSession 还会顺手读一次「会话累计」（列表末尾那行用），
+    // 注意：openSession 还会顺手读一次会话行（取模型名；每轮统计也拿它做差），
     // 所以不能按固定下标断言 —— 按内容找那一页请求。
     const paged = calls.filter((c) => c.includes('/messages?') && c.includes('offset=100'))
     expect(paged).toHaveLength(1) // offset = 已加载条数（从最新往回数）
-    // 这个 mock 不认 /api/sessions/s1（会抛）→ 累计保持 null，界面就不显示那行（不编数字）
     expect(calls.some((c) => c.endsWith('/api/sessions/s1'))).toBe(true)
-    expect(chat.store.totals).toBeNull()
 
     const text = joined(chat.store.messages)
     expect(text).toContain('user-1') // 会话第一条已可见 ← 这正是原来缺失的部分

@@ -146,4 +146,11 @@ describe('审批卡片', () => {
     const w = mount(RunStatus)
     expect(w.text()).toContain('已从服务端会话记录同步回来')
   })
+
+  it('aborted：状态条说「已中断这一轮」，且不暴露内部事件名', () => {
+    store.run.phase = 'aborted'
+    const w = mount(RunStatus)
+    expect(w.find('[data-testid="run-status"]').text()).toContain('已中断这一轮')
+    expect(w.text()).not.toContain('run.completed')
+  })
 })

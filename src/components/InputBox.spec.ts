@@ -1,21 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
-/** 只替换 send/stop 两个副作用函数，store 本体保持真实（组件要读 store.streaming） */
-const h = vi.hoisted(() => ({ send: vi.fn(), stop: vi.fn() }))
+/** 只替换 send/steer/stop 三个副作用函数，store 本体保持真实（组件要读 store.streaming 与 run.phase） */
+const h = vi.hoisted(() => ({ send: vi.fn(), steer: vi.fn(), stop: vi.fn() }))
 
 vi.mock('../stores/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../stores/chat')>()
-  return { ...actual, send: h.send, stop: h.stop }
+  return { ...actual, send: h.send, steer: h.steer, stop: h.stop }
 })
 
 import InputBox from './InputBox.vue'
-import { store } from '../stores/chat'
+import { setSendTransport, store } from '../stores/chat'
 
 beforeEach(() => {
   h.send.mockClear()
+  h.steer.mockClear()
   h.stop.mockClear()
   store.streaming = false
+  // 相位 / 通道决定按钮是「发送」还是「暂停」（v2.8 按相位分派），必须复位
+  store.run.phase = 'idle'
+  store.run.runId = null
+  setSendTransport('runs')
 })
 
 describe('InputBox 布局（文字区与按钮上下两段）', () => {
@@ -79,11 +84,11 @@ describe('InputBox 输入规则', () => {
     expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('')
   })
 
-  it('生成中：发送按钮变停止，点击调用 stop', async () => {
+  it('生成中且拿不到 run_id：按钮是「暂停」，点击调用 stop', async () => {
     store.streaming = true
     const w = mount(InputBox)
     const btn = w.find('button')
-    expect(btn.text()).toBe('停止')
+    expect(btn.text()).toBe('暂停')
     await btn.trigger('click')
     expect(h.stop).toHaveBeenCalled()
     expect(h.send).not.toHaveBeenCalled()
@@ -198,5 +203,85 @@ describe('InputBox 历史输入（↑ / ↓，像 shell）', () => {
     ] as typeof store.messages
     await ta.trigger('keydown', { key: 'ArrowUp' })
     expect((ta.element as HTMLTextAreaElement).value).toBe('刚发出去的')
+  })
+})
+
+describe('InputBox：按钮/Enter 按相位分派（2026-09-15 用户口径）', () => {
+  /** 让"跑着且能补充"的条件成立（runs 通道 + 有 run_id + 非 writing） */
+  function running(phase: 'thinking' | 'tool' | 'approval' | 'background' | 'writing'): void {
+    store.streaming = phase !== 'background'
+    store.run.phase = phase
+    store.run.runId = 'run_x'
+  }
+
+  it('思考/调工具阶段：按钮仍是「发送」，点它 = 补充（steer，不新开一轮）', async () => {
+    running('tool')
+    const w = mount(InputBox)
+    // 主按钮是「发送」，旁边另有次要「暂停」（保住"任何状态都能取消"的不变式）
+    expect(w.findAll('button').length).toBe(2)
+    expect(w.findAll('button')[0].text()).toBe('暂停')
+    expect(w.findAll('button')[1].text()).toBe('发送')
+
+    await w.find('textarea').setValue('补充：只查 2026 年的数据')
+    await w.findAll('button')[1].trigger('click')
+
+    expect(h.steer).toHaveBeenCalledWith('补充：只查 2026 年的数据')
+    expect(h.send).not.toHaveBeenCalled()
+    expect(h.stop).not.toHaveBeenCalled()
+    expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('') // 发出去了才清空
+  })
+
+  it('思考/调工具阶段仍能取消：点那次要的「暂停」调 stop（v2.2 不变式）', async () => {
+    running('tool')
+    const w = mount(InputBox)
+    await w.findAll('button')[0].trigger('click')
+    expect(h.stop).toHaveBeenCalled()
+    expect(h.steer).not.toHaveBeenCalled()
+  })
+
+  it('思考/调工具阶段：Enter 同样是补充', async () => {
+    running('thinking')
+    const w = mount(InputBox)
+    await w.find('textarea').setValue('再补一句')
+    await w.find('textarea').trigger('keydown', { key: 'Enter' })
+    expect(h.steer).toHaveBeenCalledWith('再补一句')
+    expect(h.send).not.toHaveBeenCalled()
+  })
+
+  it('正文正在输出：按钮变「暂停」；Enter 静默不提交，草稿留在输入框里', async () => {
+    running('writing')
+    const w = mount(InputBox)
+    expect(w.find('button').text()).toBe('暂停')
+
+    await w.find('textarea').setValue('这句先留着')
+    await w.find('textarea').trigger('keydown', { key: 'Enter' })
+
+    expect(h.send).not.toHaveBeenCalled()
+    expect(h.steer).not.toHaveBeenCalled()
+    expect(h.stop).not.toHaveBeenCalled() // Enter 绝不等于"暂停"（防误触打断输出）
+    expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe('这句先留着')
+  })
+
+  it('后台在跑（background）：仍是「发送」= 补充', async () => {
+    running('background')
+    const w = mount(InputBox)
+    expect(w.findAll('button')[1].text()).toBe('发送')
+  })
+
+  it('stream 回退通道（没有 steer 端点）：忙时只能「暂停」，并注明不支持补充', async () => {
+    setSendTransport('stream')
+    running('tool')
+    const w = mount(InputBox)
+    expect(w.find('button').text()).toBe('暂停')
+    expect(w.text()).toContain('当前通道不支持补充信息')
+  })
+
+  it('没在跑：按钮是「发送」，走新的一轮（send）', async () => {
+    const w = mount(InputBox)
+    expect(w.find('button').text()).toBe('发送')
+    await w.find('textarea').setValue('开一轮')
+    await w.find('textarea').trigger('keydown', { key: 'Enter' })
+    expect(h.send).toHaveBeenCalledWith('开一轮')
+    expect(h.steer).not.toHaveBeenCalled()
   })
 })

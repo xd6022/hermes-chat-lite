@@ -623,7 +623,9 @@ describe('安全闸门拦截的说明（从 run.completed.messages 里捞）', (
     await mod.send('把没用的都删了')
 
     expect(mod.store.run.blocked?.kind).toBe('approval')
-    expect(mod.store.run.blocked?.hint).toContain('没有审批通道')
+    // 本文件测旧通道 → 文案必须是「那条路没有审批接线」那版（不能是默认通道那版）
+    expect(mod.store.run.blocked?.hint).toContain('旧通道')
+    expect(mod.store.run.blocked?.hint).toContain('/v1/runs')
   })
 
   it('普通工具结果 → 不误报；且下一轮开始时会清掉上一轮的说明', async () => {

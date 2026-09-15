@@ -2,7 +2,7 @@
 
 - **立档**：2026-09-12 11:10 CST（Asia/Shanghai）
 - **分支**：`feat/runs-transport`（main 不动）；**提交**：`ef5efd3`（已推送，远程与本地一致）
-- **状态**：✅ 全部完成（S6 的"真审批事件"部分见下：本环境触发不了，已用组件用例锁住行为）
+- **状态**：✅ 全部完成（S6 的"真审批事件"已于 2026-09-15 真机验收通过，见 §8 证据流水）
 - **改的是谁**：本项目 `hermes-chat-lite`。**Hermes 源码一行不动**（`/v1/runs` 是它自带能力，我们只是没用它）
 
 ## 0. 一句话
@@ -58,7 +58,7 @@
 | 动的是**核心发送链路** | 一行开关 `SEND_TRANSPORT = 'runs' \| 'stream'` 随时回退；分支开发，main 不动；全绿才推 |
 | 事件流**不可重连**（断开后 404） | 断线/异常 → 立即 `GET /api/sessions/{id}/messages` 回读对账补上缺失段落，界面标注"已回读" |
 | `run.completed` 没有权威 transcript | 轮末补读会话消息对账（比 SSE 拼的更权威，顺带修掉"中间助理段落丢失"的老问题） |
-| 审批卡片字段未经真实载荷验证 | 防御式渲染（字段缺失不崩）；实施期尝试触发一次真审批，做不到就明确写"未实测"并留真机验收项 |
+| 审批卡片字段未经真实载荷验证 | 防御式渲染（字段缺失不崩）。**已闭环**：2026-09-15 用 `/v1/runs` 真链路触发到 `approval.request`（载荷含 `choices`/`command`/`pattern_keys`/`request_id`），回话 `once` → 200 后命令真执行；同日在真域名页面上点按钮走完整条链路。证据见 §8 |
 | 长轮次期间的 keepalive 注释行 | 解析器忽略 `:` 开头的注释行（已确认服务端会发） |
 | 未知事件涌入 | 忽略 + 计数，不崩 |
 | 并发/限流 | 服务端有 `max_concurrent_runs`，撞上会返回限流错误 → 界面原样提示 |
@@ -73,7 +73,7 @@
 | S3 | `RunStatus.vue`：审批卡片（4 个选项 + 等审批状态 + 已回话/失败提示）+ `recovered` 回读标注 | ✅ 完成 |
 | S4 | 用例：`runs-transport.spec.ts`(16) + `RunStatus.spec.ts`(8) → **122/122 全过** | ✅ 完成 |
 | S5 | 真实链路 e2e（普通轮/工具轮/中断/历史/清理）→ **常驻** `npm run e2e`，5 项全绿 | ✅ 完成 |
-| S6 | 审批真实链路验证 | 🟡 **部分**：接口契约实测通过（400/404/409）；**真审批事件在本环境触发不了**（smart approval 自动放行，历史 0 次），卡片改由 8 条组件用例锁住，真机验收项写进 README 自检第 7 条 |
+| S6 | 审批真实链路验证 | ✅ **完成（2026-09-15 真机验收）**：接口契约 400/404/409 早已实测；真审批事件用无害命令触发成功（`chmod -R 777 <一次性目录>`，模式描述 `world/other-writable permissions` 不在 `command_allowlist` 里）→ 真域名页面上点「批准一次」→ 工具结果回注 `was approved by the user`、命令真执行、run `completed`。此前"触发不了（smart approval 自动放行）"**归因不准**：主因是 `command_allowlist` 里有 `delete in root path`，在`is_approved()` 处先静默放行 |
 | S7 | 文档（§5.11 + §10.2 + 坑 38~42）+ README + skill + 推送 feat 分支 | ✅ 完成 |
 
 更新纪律：每完成一个阶段就地改这张表，并在文末追加一行证据（时间 + 命令 + 结论）。
@@ -102,6 +102,9 @@
 - 2026-09-12 11:47 CST · `node /opt/data/.verify/probe_approval_live.mjs` · **未能触发真审批**：让 agent 执行 `rm -rf /tmp/<不存在路径>` 被 smart approval 自动放行（`rm -rf` 也没弹），事件序列 `tool.started → tool.completed → message.delta ×2 → reasoning.available → run.completed`
 - 2026-09-12 12:0x CST · `npm test` **122/122**；`npx vue-tsc --noEmit` 0 错误；`npm run build` 产物 297KB / gzip 114KB
 - 2026-09-12 12:0x CST · `npm run e2e` **5 项全绿**（① 普通轮 `recovered=false`、统计 27,449 in / 缓存 96.99%；② 工具轮时间线 `[terminal]`；③ 中断 → 服务端 `cancelled`、界面 `aborted`；④ 历史 7→5 条；⑤ 删除后 404）
+- 2026-09-15 15:29 CST · `node /opt/data/.verify/probe_approval_live.mjs`（`/v1/runs` 真链路）· `rm -rf /tmp/<不存在路径>` **没有** `approval.request`：该命令的模式描述是 `delete in root path`，已在 `config.yaml` 的 `command_allowlist` 里 → `is_approved()`（`tools/approval.py:3476`）在"问人"**之前**就放行。**据此更正上文 2026-09-12 那条的归因**：不是（只是）smart approval，主因是 allowlist 短路
+- 2026-09-15 15:31 CST · `node /opt/data/.verify/probe_approval_chmod.mjs`（`/v1/runs` 真链路）· **真审批事件拿到手**：`chmod -R 777 <一次性目录>`（模式描述 `world/other-writable permissions`，不在 allowlist）→ `approval.request`（载荷：`choices:["once","session","always","deny"]`、`command`、`pattern_key`、`request_id`、`allow_session/allow_permanent`）→ 回话 `once` → 200 `{"object":"hermes.run.approval_response","resolved":1}` → `approval.responded` → `tool.completed` → 命令真执行（事后 `stat` = `drwxrwxrwx`）→ `run.completed`
+- 2026-09-15 15:43 CST · 真域名 `chat.1597133.xyz` + Windows Edge **页面上点按钮** · 服务端日志 `POST /v1/runs/run_746bc057b2a6491c8ce46e221875f8cd/approval → 200`（Referer = 该域名）；工具结果回注 `Command required approval (world/other-writable permissions) and was approved by the user.`；run `completed`、退出码 0 → **审批卡片真机验收通过**（探针会话已删并复查 404）
 
 ### 真链路抓到的问题（这些单测抓不到）
 

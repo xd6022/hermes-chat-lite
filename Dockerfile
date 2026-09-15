@@ -10,6 +10,12 @@ RUN npm ci --registry=$NPM_REGISTRY --no-audit --no-fund
 
 COPY index.html vite.config.ts tsconfig.json tailwind.config.js postcss.config.js ./
 COPY src ./src
+# ⚠️ public/ 必须一起拷：vite 只把 public/ 下的文件原样拷进产物根目录。
+#    这里漏掉它的后果特别隐蔽 —— 产物里没有 favicon.*，而 nginx 的 `try_files … /index.html`
+#    会让这些请求以 **200 + text/html** 返回入口 HTML（不是 404），
+#    浏览器拿到的"图标"其实是 HTML，于是 tab 上继续显示上一版图标，看着像"改了没生效"。
+#    实测：宿主机本地 `vite build` 有 public/ → 全绿；镜像里没拷 → 线上就是这样翻的车。
+COPY public ./public
 
 # 内含 vue-tsc 类型检查，类型不过不产出镜像
 RUN npm run build

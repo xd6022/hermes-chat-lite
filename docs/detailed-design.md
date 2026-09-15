@@ -26,7 +26,7 @@
 | P11 行内状态自动收起（v1.6 追加） | ✅ 完成 | `Sidebar.vue` document 捕获阶段 click + Esc 取消；顺带修掉一个"会腐烂"的测试（`groupSessions` 注入 `nowMs`） | 新增 5 条单测（86/86 全过）：点外面取消/删除确认点外面取消/Esc/点行内保存不误伤/切到另一行编辑；见 §5.2 与坑 34/35 |
 | P12 删除后空壳残留（v1.7 追加） | 🟡 客户端兜底已完成；🟠 **服务端补丁待宿主机应用** | 根因定位到 `hermes_state.py:7506`「确保行存在」的 upsert；客户端 `removeSession()` 加 2s 复查再删 | 新增 2 条单测（88/88 全过）+ **真实链路核验**：状态序列 `1.6s:200 → 2.0s:404`、`state.db` 行数 0；服务端补丁 `/opt/data/.verify/apply_ghost_fix.py`（需 root），见 §5.10 与坑 36 |
 | P13 安全闸门拦截提示（v1.8 追加） | ✅ 完成 | `lib/security.ts` 判据（照抄服务端文案）+ store 从 `run.completed.messages` 捞原文 + `RunStatus.vue` 琥珀色说明卡 | 新增 10 条单测（98/98 全过，含 7 条判据用例与"不误报/换轮清空"）；**真实链路核验**：transcript 确实带 `role=tool` 原文（简单一轮 2.0 KB）且正常轮不误报，见 §5.10 与坑 37 |
-| P14 发送链路迁到 `/v1/runs`（v2.0，A 方案） | ✅ 完成 | 新增 `api/runs.ts`（提交/订流/查终态/中断/审批回话/引导）+ `api/sse.ts` 抽出 `consumeSse`/`getSse` + store 双通道开关 + `RunStatus.vue` 审批卡片 + 轮末回读对账 | 新增 24 条用例（**122/122 全过**）+ **常驻真实链路 e2e**（`npm run e2e`，5 项全绿）。真链路抓到 2 个真 bug（事件名不在 `event:` 行里 → 全事件被忽略；`run.cancelled` 被判成"完成"）与 1 个字段坑（`tool` ≠ `tool_name`）；审批**真实事件在本环境触发不了**（被 smart approval 自动放行），卡片行为由 8 条组件用例锁住，见 §5.11 与坑 38/39/40 |
+| P14 发送链路迁到 `/v1/runs`（v2.0，A 方案） | ✅ 完成 | 新增 `api/runs.ts`（提交/订流/查终态/中断/审批回话/引导）+ `api/sse.ts` 抽出 `consumeSse`/`getSse` + store 双通道开关 + `RunStatus.vue` 审批卡片 + 轮末回读对账 | 新增 24 条用例（**122/122 全过**）+ **常驻真实链路 e2e**（`npm run e2e`，5 项全绿）。真链路抓到 2 个真 bug（事件名不在 `event:` 行里 → 全事件被忽略；`run.cancelled` 被判成"完成"）与 1 个字段坑（`tool` ≠ `tool_name`）；审批**真审批事件已于 2026-09-15 真机验收**（真链路触发 + 真域名页面上点按钮），此前"触发不了"的归因是 `config.yaml` 的 `command_allowlist` 里有 `delete in root path` 在问人之前静默放行；见 §5.11 与坑 38/39/40 |
 | P15 移动端表格横向溢出（v2.1，分支 `fix/mobile-table-overflow`） | ✅ 完成（2026-09-13） | `lib/markdown.ts` 给表格包 `.table-wrapper`；`style.css` 加宽度契约（wrapper `overflow-x:auto` + table `max-content` + `.md-body` `min-width:0`/`overflow-wrap:anywhere`）；`MessageItem`/`ChatWindow` 补 `min-w-0` | 新增 15 条用例（`lib/markdown.spec.ts` 5 + `style.spec.ts` 5 + `components/MessageItem.spec.ts` 5，**137/137 全过**）+ `vue-tsc` 0 错误 + **Chromium 真浏览器 before/after 对照**（375 / 320 / 1280 三档，脚本与判据见 §10.3） |
 | P16 进后台/断线自动恢复（v2.2 → v2.2.1 → v2.2.2，分支 `fix/background-resume`） | ✅ 完成（2026-09-13，含两轮真机纠偏） | `lib/page-lifecycle.ts`（前台信号 + 退避）+ `stores/chat.ts`（`hcl.activeRun` 记录、`resumeSync()`、`background` 相位、停止仍可用）+ `App.vue` 接线 + `RunStatus`/`InputBox` 文案与按钮。v2.2.1：网络类错误翻中文 + 过时横幅自愈 + 假红字自愈；v2.2.2：记录迁 `localStorage` + 没选会话时自动打开那一轮所在的会话 | 新增 31 条用例（`lib/page-lifecycle.spec.ts` 8 + `stores/resume.spec.ts` 15 + `stores/transient-error.spec.ts` 8，**168/168 全过**）+ 常驻真链路 e2e（`e2e/background-resume.e2e.spec.ts`）+ **真浏览器 7 个场景**（含"标签页被系统回收后重开"，脚本与数字见 §10.4） |
 | P17 空态去示例话术（v2.2.5，`chore/remove-empty-examples`） | ✅ 完成并部署（2026-09-14） | `ChatWindow.vue` 删掉写死的三句示例按钮（`EXAMPLES` 常量），保留「有什么可以帮您？/从一个新会话开始」两行；`App.spec.ts` 加回归断言 | 全量单测通过 + 新断言 **RED/GREEN** + 构建产物三句话术 0 命中 + **线上 bundle 复验** |
@@ -669,10 +669,10 @@ source="unknown"  title_source="llm"  message_count=0  started_at=删除后约 1
 
 #### 被安全闸门拦下时说人话（v1.8）
 
-网页端没有审批通道（审批只在 `/v1/runs`），需要人工批准的工具会被 **fail-closed 直接拒**。原来界面只显示一个 ✗，用户看不懂发生了什么。现在：
+旧通道 `chat/stream` 上没有审批接线（审批只在 `/v1/runs`），需要人工批准的工具会被 **fail-closed 直接拒**。原来界面只显示一个 ✗，用户看不懂发生了什么。（默认通道 `/v1/runs` 不会走到这里 —— 它会弹审批卡片等人回话。）现在：
 
 - **数据来源**：`tool.failed` 事件**只带工具名、不带结果**（实测载荷 `message_id, tool_name, preview, args`），所以原因只能从 `run.completed.messages`（整轮 transcript）里捞 `role=tool` 的原文 —— 真实链路已核验：该字段确实带完整工具输出（简单一轮 2.0 KB），且正常轮次不会误报。
-- **判据**：`lib/security.ts` 的 `securityBlock()`，匹配服务端 `tools/approval.py` 的**真实文案**（`approval required` / `Failed to send approval request` / `without user response` / `User denied this potentially dangerous action` → 审批类；`flagged as dangerous` / `hardline` / `deny rule` → 规则类），并给出对应的人话解释（审批类会告诉你"网页端没有审批通道，要放行去 TUI"）。
+- **判据**：`lib/security.ts` 的 `securityBlock()`，匹配服务端 `tools/approval.py` 的**真实文案**（`approval required` / `Failed to send approval request` / `without user response` / `User denied this potentially dangerous action` → 审批类；`flagged as dangerous` / `hardline` / `deny rule` → 规则类），并给出对应的人话解释 —— **审批类按通道分文**（`securityBlock(text, transport)`，`transport` 由 `stores/chat.ts` 的 `sendTransport()` 传入）：默认通道 `/v1/runs` 下说明"没等到您的回应（超时）/ 您点了拒绝"，回退通道 `chat/stream` 下说明"这条路上没有审批接线，当场拒绝"）。
 - **展示**：`RunStatus.vue` 在状态条下方出一个琥珀色卡片（标题 + 解释 + 服务端原文片段截断 240 字符），随 `resetRun()` 在下一轮开始时清掉。
 
 
@@ -909,7 +909,7 @@ Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；�
 | 类型 | `npx vue-tsc --noEmit -p tsconfig.json` | 0 错误 |
 | 真实链路（**常驻**） | `set -a && . /opt/data/.env && set +a && npm run e2e` | **5 项全绿**：① 普通轮（`recovered=false`、统计 27,449 in / 缓存 96.99%）② 工具轮（时间线带工具名 `terminal`）③ 中断（服务端 `status=cancelled`、界面 `aborted`）④ 历史回归（7 条原始 → 5 条界面消息）⑤ 清理（删除后 GET 404）。全程只动自建探针会话，用完全部删净 |
 | 审批接口契约 | `/opt/data/.verify/probe_approval_contract.mjs` | 非法/缺 `choice` → 400 `invalid_approval_choice`；未知 run（approval/get/stop）→ 404 `run_not_found`；无待审批提交 → 409 `approval_not_pending` |
-| 审批真实事件 | `/opt/data/.verify/probe_approval_live.mjs` | **未能触发**：让 agent 执行 `rm -rf /tmp/<不存在的路径>` 也被 **smart approval 自动放行**；日志（含轮转文件）历史上 **0 次** `approval.request`。→ 卡片行为由 8 条组件用例锁住，真机验收项见 README 第 7 条 |
+| 审批真实事件 | `/opt/data/.verify/probe_approval_chmod.mjs`（2026-09-15） | ✅ **真机验收通过**：`chmod -R 777 <一次性目录>`（模式描述不在 `command_allowlist` 里）→ 收 `approval.request`（`choices` 四项、`command`、`request_id`）→ 回话 `once` → 200 → `approval.responded` → 命令真执行；同日真域名页面上点按钮也走通（日志 `POST /v1/runs/{id}/approval → 200`，Referer = `chat.1597133.xyz`）。**另**：2026-09-12 的 `probe_approval_live.mjs` 用 `rm -rf /tmp/<不存在路径>` 未能触发 —— 不是 smart approval，而是 `delete in root path` 已在 `command_allowlist` 里被静默放行，见 README 第 7 条 |
 | 通道可替代性（前置实测） | `/opt/data/.verify/probe_runs.mjs` | `/v1/runs` 有逐字流式、同一 `session_id` 连续两轮历史连续、`GET /api/sessions/{id}/messages` 能读到 run 写的消息（含 `role=tool`）、事件流消费后再连 → 404 |
 | 帧形态取证 | `/opt/data/.verify/probe_runs_tail.mjs` | 原样打印流尾：`data: {...}\n\n` + `: stream closed\n\n`，**没有 `event:` 行** → 坑 38 的直接证据 |
 

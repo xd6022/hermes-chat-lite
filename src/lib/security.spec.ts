@@ -4,19 +4,33 @@ import { securityBlock } from './security'
 /**
  * 用例全部取自服务端 `tools/approval.py` 里的**真实文案**（2026-09-12 读码摘录），
  * 保证判据和服务端一致；服务端改文案时这里会先红。
+ *
+ * 文案分通道（2026-09-15）：默认通道 `/v1/runs` 有审批接线，审批类 BLOCKED 只可能是
+ * "超时没人回应 / 用户点了拒绝"；回退通道 `chat/stream` 零接线，同一句话 = 当场 fail-closed。
  */
 describe('识别"被安全闸门拦下"（securityBlock）', () => {
-  it('审批类：approval required 但无人可问 → 提示去 TUI 批准', () => {
+  it('审批类：默认通道（runs）= 没等到回应或被拒 → 提示重新发一次点批准', () => {
     const r = securityBlock(
       'BLOCKED: approval required (destructive rm -rf) but no approver is available in this context',
     )
     expect(r?.kind).toBe('approval')
-    expect(r?.hint).toContain('没有审批通道')
-    expect(r?.hint).toContain('TUI')
+    expect(r?.hint).toContain('没等到您的回应')
+    expect(r?.hint).toContain('您点了拒绝')
+    expect(r?.hint).toContain('批准一次')
     expect(r?.snippet.startsWith('BLOCKED')).toBe(true)
   })
 
-  it('审批类：notify 失败（网页端就是这条路径）', () => {
+  it('审批类：回退通道（stream）= 那条路没有审批接线 → 提示切回默认通道', () => {
+    const r = securityBlock(
+      'BLOCKED: Failed to send approval request to user. Do NOT retry.',
+      'stream',
+    )
+    expect(r?.kind).toBe('approval')
+    expect(r?.hint).toContain('旧通道')
+    expect(r?.hint).toContain('/v1/runs')
+  })
+
+  it('审批类：notify 失败（回退通道 chat/stream 就是这条路径）', () => {
     const r = securityBlock('BLOCKED: Failed to send approval request to user. Do NOT retry.')
     expect(r?.kind).toBe('approval')
   })

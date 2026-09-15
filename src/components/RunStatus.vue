@@ -133,7 +133,7 @@ const tone = computed(() => {
       <span v-if="active" class="tabular-nums text-gray-400 dark:text-gray-500">{{ secs }}</span>
     </div>
 
-    <!-- 安全闸门拦截说明：网页端没有审批通道，工具被拒时得说清"为什么"（否则只看到一个 ✗） -->
+    <!-- 安全闸门拦截说明：工具被拒时得说清"为什么"（否则只看到一个 ✗）。审批类文案按当前通道分，见 lib/security.ts -->
     <div
       v-if="store.run.blocked"
       class="mt-1 rounded-lg border border-amber-300/70 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300"

@@ -1319,7 +1319,9 @@ function blockFromMessages(messages?: HermesMessage[]): SecurityBlock | null {
   for (const m of messages ?? []) {
     const c = m.content
     const text = typeof c === 'string' ? c : Array.isArray(c) ? JSON.stringify(c) : ''
-    const hit = securityBlock(text)
+    // 文案要按当前通道说：runs（默认）下的审批类 BLOCKED = 超时/被拒；
+    // stream（回退）下同一句话 = 那条路没有审批接线，当场 fail-closed。
+    const hit = securityBlock(text, sendTransport())
     if (hit) return hit
   }
   return null

@@ -1,11 +1,12 @@
 /**
  * 安全闸门相关（纯函数，方便单测）。
  *
- * 背景：网页客户端走 `chat/stream`，而 Hermes 的**审批通道只存在于 `/v1/runs`**
- * （`register_gateway_notify` / `_run_approval_sessions` 都在 `_handle_runs` 里）。
- * 于是 `chat/stream` 这条路上：
- *   - 需要人工批准的操作 → 没有可用的通知者 → 立即 fail-closed 拒绝（不会静默卡住）
- *   - 结果就是工具时间线上只出现一个 ✗，用户完全看不懂刚才发生了什么
+ * 背景：发送默认走 `POST /v1/runs`，Hermes 的**审批接线只在这条路上**
+ * （`register_gateway_notify` / `_run_approval_sessions` 都在 `_handle_runs` 里）——
+ * 需要人工批准的操作会弹审批卡片等人回话，所以在这条路上出现的审批类 BLOCKED
+ * 只可能是"没等到回应（超时）"或"用户点了拒绝"。
+ * 回退通道 `chat/stream` 上零接线：同样的情况会被 **fail-closed 直接拒**
+ * （"没有可问的人"），因此文案按通道分开说（见 `transport` 参数）。
  *
  * 而 `tool.failed` 事件**只带工具名、不带结果**（实测载荷：`message_id, tool_name,
  * preview, args`），所以拦下的原因只能从 `run.completed.messages` 的整轮 transcript
@@ -38,8 +39,14 @@ const APPROVAL_MARKERS = [
   'user denied this potentially dangerous action',
 ]
 
+/** 发送通道（与 stores/chat.ts 的 `setSendTransport` 对应，那边的默认值是 `'runs'`） */
+export type SendTransport = 'runs' | 'stream'
+
 /** 识别"被安全闸门拦下"。命中返回说明，未命中返回 null。 */
-export function securityBlock(text: string): SecurityBlock | null {
+export function securityBlock(
+  text: string,
+  transport: SendTransport = 'runs',
+): SecurityBlock | null {
   const t = typeof text === 'string' ? text.trim() : ''
   if (!t.includes('BLOCKED')) return null
 
@@ -50,7 +57,9 @@ export function securityBlock(text: string): SecurityBlock | null {
 
   const hint =
     kind === 'approval'
-      ? '网页端没有审批通道（Hermes 的审批只接在 /v1/runs 接口上，chat/stream 这条路上没注册通知者），所以这次调用被**当场拒绝、不会执行**，并不是"排队等你批准"。要执行它，得在 TUI 里重新让它做一次 —— 那边才会弹批准/拒绝。'
+      ? transport === 'stream'
+        ? '这次操作需要人工批准，而旧通道（chat/stream）上 Hermes 没注册审批通知者，所以被**当场拒绝、不会执行**（不是"排队等你批准"）。切回默认通道（/v1/runs）再发一次，就会弹审批卡片。'
+        : '这次操作需要您人工审批（就是卡片上那几个选项），但**没等到您的回应（超时）或您点了拒绝**，所以没有执行。再发一次这条消息，在卡片上点「批准一次」即可放行。'
       : '被 Hermes 的安全策略拦下（hardline 硬规则 / 用户自定义 deny 规则等），这次操作没有执行；这类规则在任何客户端都不会放行。'
 
   const i = t.indexOf('BLOCKED')

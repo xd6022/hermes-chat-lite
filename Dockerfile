@@ -20,6 +20,16 @@ COPY public ./public
 # 内含 vue-tsc 类型检查，类型不过不产出镜像
 RUN npm run build
 
+# ★★ 构建期自检（2026-09-15 加）：产物根该有的都得有，缺一个就**在这里炸**，
+#    而不是等线上去猜"图标怎么还是旧的"。配合上面 COPY public/ 那段注释看：
+#    nginx 的 SPA 回落会把缺文件变成 200 + 入口 HTML，静默得查不出来。
+#    这几个文件名直接对应 public/ 下的实际内容（改了 public/ 记得同步改这里）。
+RUN test -f dist/index.html \
+ && test -f dist/favicon.svg \
+ && test -f dist/favicon.ico \
+ && test -f dist/apple-touch-icon.png \
+ && test -d dist/assets
+
 # ---------- 运行阶段 ----------
 FROM nginx:alpine
 

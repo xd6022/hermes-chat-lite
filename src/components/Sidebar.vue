@@ -16,7 +16,8 @@
  *  ② 正在跑的那一轮所属会话禁止改名/删除（服务端 turn 还在写它）。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { newChat, openSession, removeSession, renameSession, store, TITLE_MAX } from '../stores/chat'
+import { removeSession, renameSession, store, TITLE_MAX } from '../stores/chat'
+import { navigate } from '../lib/route'
 import { displayTitle, formatClock, groupSessions } from '../lib/format'
 import type { HermesSession } from '../api/types'
 
@@ -52,13 +53,29 @@ function locked(s: HermesSession): boolean {
   return store.streaming && store.currentId === s.id
 }
 
-async function pick(id: string): Promise<void> {
-  if (id !== store.currentId) await openSession(id)
+/**
+ * 点会话行 = **改地址**（v2.12）。
+ *
+ * 打开会话从此只有一个入口：地址变化 → `App.vue` 的路由分发。
+ * 之前这里直接 `await openSession(id)`，等于同一件事有两处实现 —— 那种结构迟早打架
+ * （地址说是 A、画面是 B）。
+ *
+ * `push` 而不是 `replace`：切换会话要**进历史一步**，这样返回键能回上一个会话
+ * （程序自己纠正地址时用 replace，见 lib/route.ts）。
+ */
+function pick(id: string): void {
+  if (id !== store.currentId) navigate(id, { mode: 'push' })
   emit('close')
 }
 
-async function startNew(): Promise<void> {
-  await newChat()
+/**
+ * 「新会话」= 回欢迎页（v2.12），**不预建空会话**。
+ *
+ * 之前这里调 `newChat()` 立刻 POST 一个空会话，于是侧栏里会堆积一堆 0 消息的空壳。
+ * 现在地址清空即可 —— 会话由第一条消息懒创建（`send()` 里已有这条逻辑）。
+ */
+function startNew(): void {
+  navigate(null, { mode: 'replace' })
   emit('close')
 }
 
@@ -160,6 +177,9 @@ async function doDelete(id: string): Promise<void> {
     return
   }
   confirmingId.value = null
+  // 删掉的正好是当前打开的会话：`removeSession` 已经把视图清空了，但**地址里还留着它的 id**
+  // ⇒ 必须把地址也清掉，否则刷新一次就会被当成"会话不存在"（用户没做错事，别给他看提示）。
+  if (!store.currentId) navigate(null, { mode: 'replace' })
   emit('close')
 }
 </script>

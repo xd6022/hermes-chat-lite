@@ -552,13 +552,20 @@ export async function loadSessions(): Promise<void> {
  *
  * `resumeAfter: false` 只给 v2.2 的 resumeSync 用：它自己会接着做同步，
  * 不需要 openSession 再 fire-and-forget 一次（那会变成同一轮同步两遍、
- * 也让调用方无法 await 到"同步完成"）。
+ * 也让调用方无法 await 到”同步完成”）。
+ *
+ * v2.12：**返回值给路由层用** —— 地址里写了会话 id，但那条会话不存在（被删/归档/乱写）时，
+ * 调用方要把人送回欢迎页并且给一句轻提示，所以这里必须能区分”不存在”与”其它错误”。
  */
+export type OpenSessionResult = { ok: true } | { ok: false; missing: boolean }
+
 export async function openSession(
   id: string,
   opts: { resumeAfter?: boolean } = {},
-): Promise<void> {
-  if (store.streaming) return
+): Promise<OpenSessionResult> {
+  // 生成中不允许切换会话（既有行为：点了没反应）。路由层要据此把地址撤回当前会话，
+  // 否则会出现”地址是 B、画面还是 A”的不一致。
+  if (store.streaming) return { ok: false, missing: false }
   store.currentId = id
   store.messages = []
   clearBootError()
@@ -568,8 +575,8 @@ export async function openSession(
   // 分页状态必须跟着会话重置，否则会把上一个会话的 offset 用到新会话上
   store.rawCount = 0
   store.hasMoreHistory = false
-  // 本轮输入合计也是"跟着会话走"的：不复位会把上一个会话的数字显示到新会话上；
-  // 复位后再试着从本地缓存恢复"上次已知"（Hermes 不落库这个值，ⓐ 口径）
+  // 本轮输入合计也是”跟着会话走”的：不复位会把上一个会话的数字显示到新会话上；
+  // 复位后再试着从本地缓存恢复”上次已知”（Hermes 不落库这个值，ⓐ 口径）
   resetContextUse()
   const cachedUse = readContextUse(id)
   if (cachedUse) {
@@ -583,22 +590,51 @@ export async function openSession(
     loadedIds = new Set(res.data.map((m) => m.id))
     store.rawCount = res.data.length
     // 返回条数等于一页 → 可能还有更早的（真实会话动辄上百条，只取最近 100 条
-    // 会让会话开头整段看不到，这就是"最上面的消息只到某一条"的原因）
+    // 会让会话开头整段看不到，这就是”最上面的消息只到某一条”的原因）
     store.hasMoreHistory = res.data.length >= HISTORY_PAGE
   } catch (e) {
     store.messages = []
     setBootError(e)
+    // 404 / session_not_found = 这条会话真的不存在（被删、被归档、地址里乱写）。
+    // 判据用状态码而不是文案（文案会变），实测量于 2026-09-15：
+    //   GET /api/sessions/<bad>/messages → 404 {"error":{"code":"session_not_found"}}
+    const missing =
+      e instanceof HermesApiError && (e.status === 404 || e.code === 'session_not_found')
+    return { ok: false, missing }
   } finally {
     store.messagesLoading = false
   }
   // 会话累计（历史会话也能看到这行；逐轮明细 Hermes 不落库，只能看累计）。
   // 失败就保持 null → 末尾那行不显示，不编数字。
   void counters(id)
-  // 上下文窗口上限（同一个"跟着会话走"的诉求；接口在 dashboard 后端，取不到就不显示分母）
+  // 上下文窗口上限（同一个”跟着会话走”的诉求；接口在 dashboard 后端，取不到就不显示分母）
   void loadModelInfo()
-  // v2.2：打开会话后立刻对一次账 —— 页面刷新/被杀过之后，"这一轮还在后台跑"
-  // 或"已经跑完了"都要在这里认出来（否则用户只看到自己那条消息、以为丢了）。
+  // v2.2：打开会话后立刻对一次账 —— 页面刷新/被杀过之后，”这一轮还在后台跑”
+  // 或”已经跑完了”都要在这里认出来（否则用户只看到自己那条消息、以为丢了）。
   if (opts.resumeAfter !== false) void resumeSync()
+  return { ok: true }
+}
+
+/**
+ * 回到欢迎页（v2.12：地址为空 = 没有打开任何会话）。
+ *
+ * 只清”跟着会话走”的状态，不动侧栏列表与主题/折叠偏好。
+ * 与 `removeSession()` 里删掉当前会话时那段清理保持同一套动作（少一处”看起来一样但漏了一项”）。
+ */
+export function goHome(): void {
+  if (store.streaming) return
+  store.currentId = null
+  store.messages = []
+  loadedIds = new Set()
+  store.rawCount = 0
+  store.hasMoreHistory = false
+  store.messagesLoading = false
+  resetRun()
+  store.run.phase = 'idle'
+  store.run.startedAt = 0
+  store.run.endedAt = 0
+  resetContextUse()
+  clearBootError()
 }
 
 /**
@@ -1361,30 +1397,18 @@ export async function resumeSync(): Promise<void> {
   if (!rec) return
 
   /*
-   * 还没选会话（页面被回收/刷新后重新打开）→ **直接把那一轮所在的会话打开**。
+   * v2.12（用户 2026-09-15 拍板）：**打开哪个会话由地址说了算**，这里不再自动切会话。
    *
-   * 为什么必须这么做：刷新/被回收后 currentId 是空的（会话选择没有持久化），
-   * 界面停在"未选中会话"的空态 —— 用户看不到"任务仍在后台执行"，也就不会去点它。
-   * 真机实测（2026-09-13 14:14）就是卡在这儿：服务端的回复早跑完了，前端一动不动，
-   * 直到用户自己点了一下会话。
+   * 之前的做法是”刷新后被回收过 → 直接把那一轮所在的会话打开”（v2.2，真机教训 2026-09-13 14:14）。
+   * 现在这会和地址打架：地址里可能是 B，自动跳到 A 就变成了”地址与画面不一致”，
+   * 刷新一次还会再跳一次。所以改成：**只有你已经打开的就是那条在跑的会话时，才接上去**。
    *
-   * 注意 openSession() 末尾也会调一次本函数（幂等）→ 同步由那一次完成，这里直接返回，
-   * 用 `resumeAfter: false` 让 openSession 别再自己调一次本函数：同步由**这里**接着做完，
-   * 这样调用方（App 挂载 / 前台事件）能 await 到"同步完成"，也不会把同一轮跑两遍。
+   * 记录本身（`hcl.activeRun`）**保留**：它换来四件事 —— 打开后能**停**那一轮、能接上实时流、
+   * 轮末对账、以及防误发第二轮（否则同一会话里会并发两条 run、历史交叉）。
    */
-  if (!store.currentId && rec.sessionId) {
-    // resumeAfter: false —— 同步由本函数接下来自己做完（可被调用方 await），
-    // 避免 openSession 里那次 fire-and-forget 与本函数并发跑同一轮同步
-    await openSession(rec.sessionId, { resumeAfter: false })
-    // 会话已经被删/归档了 → 记录没有意义，清掉（横幅照旧显示"会话不存在"，那是真信息）
-    if (store.bootError) {
-      clearActiveRun()
-      stopWatching()
-      return
-    }
-    // 拿到会话了 → 继续往下走正常的"问状态 + 对账"
-  }
   if (!store.currentId) return
+  // 打开的不是”那一轮所在”的会话 → 什么都不做（别人的会话状态与此无关）
+  if (rec.sessionId && rec.sessionId !== store.currentId) return
 
   if (store.streaming) {
     // 本页那一轮还"活着"，但可能是个僵尸流（页面冻结期间 socket 已死、promise 永不 settle）。

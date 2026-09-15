@@ -10,7 +10,9 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatWindow from './components/ChatWindow.vue'
-import { checkHealth, loadSessions, resumeSync, store } from './stores/chat'
+import Notice from './components/Notice.vue'
+import { checkHealth, clearBootError, goHome, loadSessions, openSession, resumeSync, store } from './stores/chat'
+import { currentRoute, markInitialRoute, navigate, onRouteChange, type Route } from './lib/route'
 import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
 
@@ -65,17 +67,60 @@ function toggleSidebar(): void {
  */
 let unwatchForeground: (() => void) | null = null
 
+/* ── 地址即状态（v2.12）─────────────────────────────────────────────
+ * 打开会话**只有这一个入口**：地址变化 → applyRoute()。
+ * 侧栏点击、返回键、手改地址、外链进来，走的都是同一条路 —— 所以地址和画面不会打架。
+ */
+
+/** 轻提示（会自动消失）：目前只有"地址里的会话不存在"会用到 */
+const notice = ref('')
+let offRoute: (() => void) | null = null
+
+async function applyRoute(r: Route): Promise<void> {
+  if (r.kind === 'home') {
+    goHome()
+    return
+  }
+  if (r.id === store.currentId) return
+
+  const res = await openSession(r.id)
+  if (res.ok) return
+
+  if (res.missing) {
+    // 地址里的会话不存在（被删/归档/乱写）→ 送回欢迎页（地址也清干净）+ 一句轻提示。
+    // 口径（用户 2026-09-15）：5 秒自动消失、点一下就立刻消失。
+    // 顺手清掉 bootError：这条信息由轻提示表达，别同时挂一条红字常驻横幅。
+    clearBootError()
+    navigate(null, { mode: 'replace' })
+    notice.value = '该会话不存在，请重新创建'
+    return
+  }
+
+  // 生成中不许切会话（openSession 的守卫，既有行为）→ 把地址撤回当前会话，
+  // 否则会留下"地址是 B、画面是 A"的不一致。其它错误（网络等）保持地址不动：
+  // 那种情况下 openSession 已经把人送进目标会话并挂了错误横幅，刷新重试即可。
+  if (store.streaming && store.currentId) navigate(store.currentId, { mode: 'replace' })
+}
+
 onMounted(() => {
   // 恢复折叠态后按钮语义要跟得上（否则 hover 提示会说反）
   sidebarLabel.value = collapsed.value ? '展开会话列表' : '折叠会话列表'
   void checkHealth()
   void loadSessions()
   unwatchForeground = watchForeground(() => void resumeSync())
-  // 首帧也对一次账：页面可能是被系统回收后重新打开的（此时本轮 run 还在服务端跑）
+  // 首帧：先按地址进入（刷新恢复会话靠的就是这一步），再对一次账
+  const initial = currentRoute()
+  markInitialRoute(initial)
+  offRoute = onRouteChange((r) => void applyRoute(r))
+  void applyRoute(initial)
+  // 欢迎页时也对一次账：页面可能是被系统回收后重新打开的（此时本轮 run 还在服务端跑）
   void resumeSync()
 })
 
-onBeforeUnmount(() => unwatchForeground?.())
+onBeforeUnmount(() => {
+  unwatchForeground?.()
+  offRoute?.()
+})
 </script>
 
 <template>
@@ -151,6 +196,9 @@ onBeforeUnmount(() => unwatchForeground?.())
       <ChatWindow />
     </div>
   </div>
+
+  <!-- 会自动消失的轻提示（点击立即消失；5 秒后自己走） -->
+  <Notice v-if="notice" :text="notice" @close="notice = ''" />
 
   <!-- Settings 抽屉（最小化：不做模型切换 / Prompt / Agent 配置） -->
   <div v-if="settings" class="fixed inset-0 z-40 bg-black/20 dark:bg-black/50" @click.self="settings = false">

@@ -125,7 +125,7 @@ beforeEach(() => {
 })
 
 describe('历史消息过滤 normalize()', () => {
-  it('滤掉 system/非文本；空 assistant 不进气泡，但它的工具调用要留下', async () => {
+  it('滤掉 system/非文本；空 assistant 不留空段，但它的工具调用要留下（自成一段工具行）', async () => {
     const { normalize } = await freshModule()
     const raw = [
       { id: 1, session_id: 's', role: 'user', content: '你好', timestamp: 1 },
@@ -137,13 +137,15 @@ describe('历史消息过滤 normalize()', () => {
     ] as unknown as HermesMessage[]
 
     const out = normalize(raw)
-    expect(out.map((m) => m.role)).toEqual(['user', 'assistant', 'user'])
-    expect(out.map((m) => m.content)).toEqual(['你好', '读到了', '图片说明'])
+    // 段序 = 时间序：提问 → 工具行（那一步做了什么）→ 正文 → 下一个提问
+    expect(out.map((m) => m.role)).toEqual(['user', 'assistant', 'assistant', 'user'])
+    expect(out.map((m) => m.kind)).toEqual([undefined, 'tools', 'text', undefined])
+    expect(out.map((m) => m.content)).toEqual(['你好', '', '读到了', '图片说明'])
     // tool_calls 是空对象（没有名字）→ 退回用结果行的 tool_name 成一步，信息不丢
     expect(out[1].tools).toEqual([{ name: 'read_file', preview: '', status: 'ok', ms: null }])
   })
 
-  it('工具按 tool_call_id 配对：成败来自结果启发式、耗时来自两行 timestamp', async () => {
+  it('★ 按时间交错：正文 → 工具行 → 正文 → 工具行 → 正文（每一步都落在真实位置）', async () => {
     const { normalize } = await freshModule()
     const raw = [
       { id: 1, session_id: 's', role: 'user', content: '看下', timestamp: 100 },
@@ -171,36 +173,35 @@ describe('历史消息过滤 normalize()', () => {
     ] as unknown as HermesMessage[]
 
     const out = normalize(raw)
-    expect(out.map((m) => m.content)).toEqual(['看下', '先看一眼\n\n看完了'])
+    // 旧行为是"一整轮压成一个气泡、工具统一堆到正文上方"，顺序信息全丢；
+    // 新行为是**五段按时间排**：提问 / 工具(terminal) / 正文"先看一眼" / 工具(read_file) / 正文"看完了"
+    expect(out.map((m) => m.kind ?? 'text')).toEqual(['text', 'tools', 'text', 'tools', 'text'])
+    expect(out.map((m) => m.content)).toEqual(['看下', '', '先看一眼', '', '看完了'])
+    // 配对：成败来自结果启发式、耗时来自两行 timestamp（与旧口径一致，没动这块逻辑）
     expect(out[1].tools).toEqual([
       { name: 'terminal', preview: 'ls -la /opt/data', status: 'ok', ms: 300, tSec: 101, callId: 'c1' },
+    ])
+    expect(out[3].tools).toEqual([
       { name: 'read_file', preview: 'a.py', status: 'fail', ms: 500, tSec: 102, callId: 'c2' },
     ])
   })
 
-  it('本轮的工具有唯一归属：都在本轮那条回复下面（只调工具没正文的最后一轮也算）', async () => {
+  it('连续正文段仍然合并（中间没有工具行时不会碎成一堆小块）', async () => {
     const { normalize } = await freshModule()
     const raw = [
-      { id: 1, session_id: 's', role: 'user', content: '跑一下', timestamp: 1 },
-      { id: 2, session_id: 's', role: 'assistant', content: '稍等', timestamp: 2 },
-      {
-        id: 3,
-        session_id: 's',
-        role: 'assistant',
-        content: '',
-        timestamp: 3,
-        tool_calls: [{ id: 'z1', function: { name: 'terminal', arguments: '{"command":"sleep 1"}' } }],
-      },
-      { id: 4, session_id: 's', role: 'tool', content: '{"ok":true}', tool_name: 'terminal', tool_call_id: 'z1', timestamp: 3.4 },
+      { id: 1, session_id: 's', role: 'user', content: '问', timestamp: 1 },
+      { id: 2, session_id: 's', role: 'assistant', content: '第一段', timestamp: 2 },
+      { id: 3, session_id: 's', role: 'assistant', content: '第二段', timestamp: 3 },
+      { id: 4, session_id: 's', role: 'assistant', content: '第三段', timestamp: 4 },
     ] as unknown as HermesMessage[]
 
     const out = normalize(raw)
     expect(out).toHaveLength(2)
-    expect(out[1].content).toBe('稍等')
-    expect(out[1].tools?.map((t) => t.name)).toEqual(['terminal'])
+    expect(out[1].content).toBe('第一段\n\n第二段\n\n第三段')
+    expect(out[1].kind).toBe('text')
   })
 
-  it('整轮只有工具、一个字的正文都没有：单独成块而不是丢掉', async () => {
+  it('整轮只有工具、一个字的正文都没有：工具行段留着而不是丢掉', async () => {
     const { normalize } = await freshModule()
     const raw = [
       { id: 1, session_id: 's', role: 'user', content: '跑一下', timestamp: 1 },
@@ -217,11 +218,12 @@ describe('历史消息过滤 normalize()', () => {
 
     const out = normalize(raw)
     expect(out).toHaveLength(2)
+    expect(out[1].kind).toBe('tools')
     expect(out[1].content).toBe('')
     expect(out[1].tools?.map((t) => t.name)).toEqual(['read_file'])
   })
 
-  it('压缩摘要不吃工具归属（工具留在上一条回复上）', async () => {
+  it('压缩摘要不吃工具归属（工具行段留在摘要之前）', async () => {
     const { normalize } = await freshModule()
     const raw = [
       { id: 1, session_id: 's', role: 'user', content: '继续', timestamp: 1 },
@@ -239,42 +241,75 @@ describe('历史消息过滤 normalize()', () => {
     ] as unknown as HermesMessage[]
 
     const out = normalize(raw)
-    expect(out[1].tools?.map((t) => t.name)).toEqual(['terminal'])
-    expect(out[2].compaction).toBe(true)
-    expect(out[2].tools).toBeUndefined()
+    // 工具行段自成一段（不再挂到上一条正文上），且**压缩摘要不吃工具归属**
+    expect(out[1].kind).toBe('text')
+    expect(out[1].tools).toBeUndefined()
+    expect(out[2].kind).toBe('tools')
+    expect(out[2].tools?.map((t) => t.name)).toEqual(['terminal'])
+    expect(out[3].compaction).toBe(true)
+    expect(out[3].tools).toBeUndefined()
   })
 })
 
 describe('历史分页边界 prependEarlier()', () => {
-  it('边界两侧都是 assistant 时合并，tools 也一起串接（否则工具会掉进页码缝里）', async () => {
+  it('边界两侧都是**正文段**时合并正文（否则会留下那 24px 的缝）', async () => {
     const { prependEarlier } = await freshModule()
     const older: UiMessage[] = [
-      { key: 'a', role: 'assistant', content: '前半', tools: [{ name: 'x', preview: '', status: 'ok', ms: null }] },
+      { key: 'a', role: 'assistant', kind: 'text', content: '前半' },
     ]
     const current: UiMessage[] = [
-      { key: 'b', role: 'assistant', content: '后半', tools: [{ name: 'y', preview: '', status: 'ok', ms: null }] },
+      { key: 'b', role: 'assistant', kind: 'text', content: '后半' },
     ]
 
     const out = prependEarlier(older, current)
     expect(out).toHaveLength(1)
     expect(out[0].content).toBe('前半\n\n后半')
+  })
+
+  it('边界两侧都是**工具行段**时合并工具（否则工具会掉进页码缝里）', async () => {
+    const { prependEarlier } = await freshModule()
+    const older: UiMessage[] = [
+      { key: 'a', role: 'assistant', kind: 'tools', content: '', tools: [{ name: 'x', preview: '', status: 'ok', ms: null }] },
+    ]
+    const current: UiMessage[] = [
+      { key: 'b', role: 'assistant', kind: 'tools', content: '', tools: [{ name: 'y', preview: '', status: 'ok', ms: null }] },
+    ]
+
+    const out = prependEarlier(older, current)
+    expect(out).toHaveLength(1)
     expect(out[0].tools?.map((t) => t.name)).toEqual(['x', 'y'])
+  })
+
+  it('★ 正文段 + 工具行段**不合并**（合并就把交错顺序抹掉了，正是本次要修的东西）', async () => {
+    const { prependEarlier } = await freshModule()
+    const older: UiMessage[] = [{ key: 'a', role: 'assistant', kind: 'text', content: '正文' }]
+    const current: UiMessage[] = [
+      { key: 'b', role: 'assistant', kind: 'tools', content: '', tools: [{ name: 'x', preview: '', status: 'ok', ms: null }] },
+    ]
+
+    const out = prependEarlier(older, current)
+    expect(out).toHaveLength(2)
+    expect(out.map((m) => m.kind)).toEqual(['text', 'tools'])
   })
 })
 
 describe('流式发送 send()', () => {
-  it('半帧切片 + 中文切在多字节中间 → 不乱码不丢事件；completed 覆盖 delta', async () => {
+  it('半帧切片 + 中文切在多字节中间 → 不乱码不丢事件；completed 覆盖 delta（含工具行交错）', async () => {
     const mod = await freshModule()
     await mod.send('hi')
 
-    expect(mod.store.messages).toHaveLength(2)
     expect(mod.store.messages[0]).toMatchObject({ role: 'user', content: 'hi' })
+    // 本轮的段（时间序）：工具行（工具先跑）→ 正文段（"工具之后"的那段正文）
+    // 注意"按需创建"：这一轮开口先调工具，所以**没有**空正文段（旧占位气泡已去掉）
+    const segs = mod.store.messages.filter((m) => m.role === 'assistant')
+    expect(segs.map((m) => m.kind ?? 'text')).toEqual(['tools', 'text'])
     // delta 拼接是 "\n\n你好，世界"，completed 是 "你好，世界" → 必须是后者
-    expect(mod.store.messages[1].content).toBe('你好，世界')
-    expect(mod.store.messages[1].streaming).toBe(false)
+    expect(segs[1].content).toBe('你好，世界')
+    // 轮末所有段都封口（光标不该留在历史段上）
+    expect(segs.every((m) => !m.streaming)).toBe(true)
   })
 
-  it('工具事件进时间线并内联挂到本轮回复上，run.completed 才判定完成', async () => {
+  it('工具事件进时间线 + 内联成一段工具行（落在正文之前），run.completed 才判定完成', async () => {
     const mod = await freshModule()
     await mod.send('hi')
 
@@ -285,10 +320,12 @@ describe('流式发送 send()', () => {
     ])
     // 耗时是本地计时算出来的（不依赖事件里的 ts）
     expect(typeof mod.store.run.timeline[0].ms).toBe('number')
-    // ★ 内联展示：工具挂在本轮那条回复下面（v2.3 起的展示位置）
-    expect(mod.store.messages[1].tools).toMatchObject([
-      { name: 'read_file', preview: 'package.json', status: 'ok' },
-    ])
+    // ★ 内联展示：工具是**独立的一段工具行**（v2.11），位置就是在正文之前（真实时间序）
+    const toolsSeg = mod.store.messages.find((m) => m.kind === 'tools')
+    expect(toolsSeg?.tools).toMatchObject([{ name: 'read_file', preview: 'package.json', status: 'ok' }])
+    expect(mod.store.messages.indexOf(toolsSeg!)).toBeLessThan(
+      mod.store.messages.findIndex((m) => (m.kind ?? 'text') === 'text' && m.role === 'assistant'),
+    )
     expect(mod.store.streaming).toBe(false)
   })
 

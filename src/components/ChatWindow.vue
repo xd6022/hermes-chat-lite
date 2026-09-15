@@ -16,6 +16,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearBootError, loadEarlier, loadModelInfo, loadSessions, openSession, store } from '../stores/chat'
 import { followUntilSettled } from '../lib/scroll-anchor'
+import { groupIntoTurns } from '../lib/turns'
 import MessageItem from './MessageItem.vue'
 import RunStatus from './RunStatus.vue'
 import ContextGauge from './ContextGauge.vue'
@@ -29,6 +30,12 @@ const stick = ref(true)
 /** 打开会话后的"锚定窗口"：期间无视 80px 阈值，内容长多少跟多少 */
 const pendingAnchor = ref(false)
 let ro: ResizeObserver | null = null
+
+/**
+ * 按轮分组（v2.11）：轮内是"正文段 / 工具行段"按时间交替的若干段，轮间才留白。
+ * 分组是纯函数（`lib/turns.ts`），这里只负责把结果画出来。
+ */
+const turns = computed(() => groupIntoTurns(store.messages))
 
 /**
  * 划到顶部这个距离内就自动加载更早的历史（滚轮/触摸都一样触发）。
@@ -233,8 +240,20 @@ function retry(): void {
             {{ store.historyLoading ? '加载中…' : '加载更早的消息' }}
           </button>
         </div>
-        <div ref="listRef" class="min-w-0 space-y-6">
-          <MessageItem v-for="m in store.messages" :key="m.key" :msg="m" />
+        <!--
+          一轮一个块：轮内紧凑（space-y-2）、轮间留白（mt-6 + first:mt-0）。
+          交错渲染之后一轮里会有好几个段，用统一个间距会让"轮内先后"和"新一轮提问"看起来一样远。
+        -->
+        <div class="min-w-0">
+          <div
+            v-for="t in turns"
+            :key="t.key"
+            data-testid="turn"
+            class="mt-6 min-w-0 space-y-2 first:mt-0"
+          >
+            <MessageItem v-if="t.ask" :msg="t.ask" />
+            <MessageItem v-for="m in t.segs" :key="m.key" :msg="m" />
+          </div>
         </div>
 
       </div>

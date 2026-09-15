@@ -204,8 +204,9 @@ describe('/v1/runs 通道：基本链路', () => {
     expect(mod.store.run.timeline).toMatchObject([
       { name: 'terminal', preview: 'echo hi', status: 'fail' },
     ])
-    // 内联展示同样要有（失败的工具在这条回复下面显示 ✗）
-    expect(mod.store.messages[1].tools).toMatchObject([{ name: 'terminal', status: 'fail' }])
+    // 内联展示同样要有：工具段里的这一步显示 ✗（成败与时间线一致）
+    const toolsSeg = mod.store.messages.find((m) => m.kind === 'tools')
+    expect(toolsSeg?.tools).toMatchObject([{ name: 'terminal', status: 'fail' }])
   })
 
   it('真实帧形态：没有 event: 行、事件名在 JSON 的 event 字段里（真链路实测踩到的坑）', async () => {
@@ -225,7 +226,7 @@ describe('/v1/runs 通道：基本链路', () => {
 })
 
 describe('/v1/runs 通道：轮末回读对账', () => {
-  it('权威正文来自 transcript：抹掉 delta 的前导换行杂质，并合并工具前后的多段', async () => {
+  it('★ 权威段序来自 transcript：正文 → 工具行 → 正文（交错，delta 的前导换行杂质被抹掉）', async () => {
     opts.events = [
       ev('message.delta', { delta: '\n\n让我查一下' }),
       ev('tool.started', { tool_name: 'read_file' }),
@@ -242,15 +243,20 @@ describe('/v1/runs 通道：轮末回读对账', () => {
     const mod = await freshRuns()
     await mod.send('hi')
 
-    expect(mod.store.messages[1].content).toBe('让我查一下\n\n答案是 42')
+    // 段序 = 落库的真实先后（旧行为是把三段并成一个气泡，顺序信息丢掉了）
+    const segs = mod.store.messages.filter((m) => m.role === 'assistant')
+    expect(segs.map((m) => m.kind ?? 'text')).toEqual(['text', 'tools', 'text'])
+    expect(segs.map((m) => m.content)).toEqual(['让我查一下', '', '答案是 42'])
+    // 前导换行杂质来自 delta（"\n\n让我查一下"）→ 已被 transcript 的权威正文覆盖掉
+    expect(segs[0].content.startsWith('\n')).toBe(false)
     // 断线补齐/轮末对账：找回的那份也要长成同一形状（有预览、有成败、耗时拿不到就是 null）
     // 注意这一轮 SSE 收到过 tool.started，所以时间线保留实时那份（有本地耗时），不覆盖成历史版
     expect(mod.store.run.timeline).toMatchObject([
       { name: 'read_file', preview: '', status: 'ok' },
     ])
     expect(typeof mod.store.run.timeline[0].ms).toBe('number')
-    // 并且已经内联挂到本轮这条回复上
-    expect(mod.store.messages[1].tools?.map((t) => t.name)).toEqual(['read_file'])
+    // 并且已经内联成一段工具行（就是段序中间那一段）
+    expect(segs[1].tools?.map((t) => t.name)).toEqual(['read_file'])
   })
 
   it('安全闸门原文从 transcript 捞（runs 通道没有 run.completed.messages）', async () => {

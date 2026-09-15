@@ -67,8 +67,22 @@ describe('App 集成', () => {
     expect(header).toContain(__BUILD_SHORT__)
     expect(w.find('textarea').exists()).toBe(true)
     expect(w.text()).toContain('有什么可以帮您？')
-    // 空态底部也放了一份完整形态
-    expect(w.text()).toContain(__BUILD_ID__)
+    // 空态那份构建标识已去掉（2026-09-15）；顶栏那一份仍是"看是哪一版"的入口
+    expect(w.text()).not.toContain(__BUILD_ID__)
+  })
+
+  it('空态只剩标题：副标题与构建标识都已去掉（2026-09-15）', async () => {
+    const w = mount(App)
+    await flushPromises()
+
+    const scroller = w.find('[data-testid="scroller"]')
+    expect(scroller.exists()).toBe(true)
+    expect(scroller.text()).toContain('有什么可以帮您？')
+    // 副标题的两种文案（新会话 / 已选中但没消息）都不该再出现在屏幕正中
+    expect(scroller.text()).not.toContain('从一个新会话开始')
+    expect(scroller.text()).not.toContain('这个会话还没有消息')
+    // 屏幕正中不再有那份构建标识（顶栏还有一份，见上一条用例）
+    expect(scroller.text()).not.toContain(__BUILD_ID__)
   })
 
   it('空态不显示任何示例话术（自用：保持对话区干净）', async () => {

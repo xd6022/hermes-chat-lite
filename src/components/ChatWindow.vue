@@ -22,9 +22,6 @@ import RunStatus from './RunStatus.vue'
 import ContextGauge from './ContextGauge.vue'
 import InputBox from './InputBox.vue'
 
-// 构建时注入（vite.config.ts 的 define）：空态底部显示，方便真机一眼确认版本
-const buildId = __BUILD_ID__
-
 const scroller = ref<HTMLElement | null>(null)
 /** 消息区整块内容（含"加载更早"行与"会话累计"行）：ResizeObserver 盯它 */
 const contentRef = ref<HTMLElement | null>(null)
@@ -219,16 +216,14 @@ function retry(): void {
         v-if="!store.messages.length && !store.messagesLoading"
         class="mx-auto flex h-full max-w-chat flex-col items-center justify-center gap-4 px-6"
       >
-        <div class="text-center">
-          <div class="text-2xl font-semibold">有什么可以帮您？</div>
-          <p class="mt-1 text-sm text-gray-400 dark:text-gray-500">
-            {{ store.currentId ? '这个会话还没有消息' : '从一个新会话开始' }}
-          </p>
-        </div>
-        <!-- 空态刻意不显示任何示例话术（自用：保持对话区干净）。
-             曾有一组写死的示例按钮（510210 盘面 / hermes_stock 交易记录 / Python 改异步），已去掉。 -->
-        <!-- 构建标识：手机上一个新加载的页面就能看到"这是哪一版"（踩过缓存旧版本的坑） -->
-        <p class="text-xs text-gray-300 dark:text-gray-600">{{ buildId }}</p>
+        <!--
+          空态只留标题（2026-09-15 按用户要求）：副标题（『从一个新会话开始』/『这个会话还没有消息』）
+          与空态那一份构建标识都去掉了 —— 那个时间戳是**构建时刻**不是在跑的时间，
+          留在屏幕正中只会让人误读；顶栏另有一份同样的小字标识，"看是哪一版"不受影响。
+          空态刻意不显示任何示例话术（自用：保持对话区干净）——曾有一组写死的示例按钮
+          （510210 盘面 / hermes_stock 交易记录 / Python 改异步），已去掉。
+        -->
+        <div class="text-2xl font-semibold">有什么可以帮您？</div>
       </div>
 
       <!-- 加载态 -->

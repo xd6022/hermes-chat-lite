@@ -34,6 +34,9 @@
 | P19 会话累计行 + 输入框 ↑ 翻历史（v2.4，`feat/session-totals-input-history`） | ✅ 完成并部署（2026-09-14） | `ChatWindow.vue` 列表末尾一行「本会话累计」（`formatCompactTokens`）+ `InputBox.vue` ↑/↓ 翻历史（输入法合成、多行非首行一律让路）+ `lib/format.ts` 新格式化 | 单测 194 + **RED/GREEN（7 条）** + **线上真 DOM 复验 14/14**（含 ↑ 填回上一条 / ↓ 还原草稿） |
 | P20 上下文水位（v2.5，`feat/context-gauge`） | ✅ 完成并部署（2026-09-14） | 新 `ContextGauge.vue`（贴输入框上方）+ 新 `lib/context-cache.ts`（ⓐ 上次已知）+ `chat.ts` 三来源接线 + `nginx.conf`（`/api/model-info` → 9119） | 单测 210 + RED/GREEN 13 条 + **真浏览器 14/14** + 本地桩端到端 18/18；线上复验：水位行在线、`/api/model-info` 200、构建标识 `2026-09-14 21:30`（Docker 无 .git 只有时刻） |
 | P21 打开会话的落点（v2.6，`fix/scroll-anchor-stable`） | 🟡 代码完成，**待合并部署** | 新 `lib/scroll-anchor.ts`（高度稳定判定 + 逐帧跟随）+ `ChatWindow.vue`（ResizeObserver 盯**内容容器**、打开会话锚定窗口、`earlier()` 补偿改为等稳定）+ 新单测 | 单测 **221** + RED/GREEN（2 条核心断言红）+ **真浏览器**：多会话落点表**修后全部"距底 0"**（修前 655~2297px）、护栏"上滚不被拽回"（距底保持 1200）、"加载更早"后锚偏移 **Δ=0px**；坑 50/51 记录了四处修法与两个可复用教训 |
+| P22 水位行口径纠偏 + 删「本会话累计」（v2.7，`chore/ctx-gauge-and-session-totals`，PR #16） | ✅ 完成并部署（2026-09-15） | `ContextGauge.vue` 改灰并撤掉分母/百分比/进度条（`模型 │ 窗口 1m │ 本轮输入合计 …`）+ `chat.ts` 删 `totals`/`SessionTotals`/`counters()` 写段 + `ChatWindow.vue` 删「本会话累计」行 | 单测 221 + **RED/GREEN（9 条新断言全红）** + 构建产物「本会话累计/缓存命中/█」**0 命中** + **线上真浏览器**：颜色 `rgb(156,163,175)`、无 █/%、旧行 DOM 与文本都不存在。口径纠偏见坑 52 |
+| P23 发送按钮按相位分派（v2.9，`feat/phase-dispatch-steer`，PR #17） | ✅ 完成并部署（2026-09-15） | `chat.ts` 新增 `canSteer()`/`steer()`/`UiMessage.interrupted`；`InputBox.vue` 按钮与 Enter **按相位分派**（思考/调工具期=补充，正文输出期=暂停且 Enter 静默）；`MessageItem.vue` 贴「已中断」；`RunStatus.vue` 文案改「已中断这一轮」 | 单测 **238** + **RED/GREEN（15 条新断言全红）** + `vite build` + **真浏览器端到端（打真模型真工具）**：工具期按钮 `["暂停","发送"]`、点发送后补充气泡可见（轮末仍在）、本轮输出含 `STEER_OK`（证明模型真按补充执行）、工具期点暂停 → `phase=aborted` + 贴「已中断」；插消息端点口径见坑 53 |
+| P24 静态资源"缺文件"真 404 加固（v2.10，同 `feat/phase-dispatch-steer`） | 🟡 代码完成，**待重建镜像验证** | `nginx.conf` 加根层后缀 location（`try_files $uri =404`）+ `Dockerfile` 加构建期断言（`test -f dist/{index.html,favicon.svg,favicon.ico,apple-touch-icon.png}` + `test -d dist/assets`） | 后缀正则语义 18/18 + 断言 **RED/GREEN**（模拟漏拷 `public/`、产物无 `assets/` 均按预期失败）+ **真 nginx 解析器 crossplane `status: ok` / 0 错**；行为验收（缺文件回 404 而非 200 HTML）需重建镜像后按 §8.4 的 curl 两条 |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -393,6 +396,8 @@ export async function postSse(
 - `X-Accel-Buffering: no` 服务端已带，双重保险；
 - `gzip off;`（对 SSE 无用且可能引入缓冲）；
 - 静态资源：`try_files $uri $uri/ /index.html;`（Vue history 模式）。
+- **静态资源"缺文件"必须真 404（v2.10 加固）**：`location ~* ^/[^/]+\.(?:ico|png|jpe?g|gif|svg|webp|avif|woff2?|ttf|eot|map|webmanifest)$ { try_files $uri =404; }` —— 否则 `location /` 的 `try_files $uri $uri/ /index.html` 会把不存在的 `/favicon.svg` **也**回成 **200 + 入口 HTML**，于是"文件压根没打进镜像"这种错**在浏览器和 curl 里都看不见**（实测栽过：一度误判成浏览器缓存，真凶是 Dockerfile 漏了 `COPY public/`）。
+  正则**锚在根层**（`^/[^/]+\.`）是有意的：不锚会抢走 `/assets/x.woff2`、`/assets/x.svg` 这类 vite 产物、**绕过 `/assets/` 那条一年 immutable 缓存头**（缓存行为悄悄退化）。
 
 key 通过环境变量注入：镜像里给 nginx 用 `envsubst` 模板，或用 `docker compose` 的 `env_file` 生成。**key 只存在于宿主机 .env 与容器环境变量中**。
 
@@ -798,6 +803,8 @@ run 由**服务端自己跑完并写进会话**，没有任何客户端订阅也
 阶段 1：`node:22-alpine` 装依赖 + `npm run build` → `dist/`
 阶段 2：`nginx:alpine`，COPY `dist` 到 `/usr/share/nginx/html`，COPY `nginx.conf`，用 `envsubst` 注入 `HERMES_API_SERVER_KEY`（key 不进镜像层，运行时注入）。
 
+**构建期自检（v2.10 加）**：`npm run build` 之后跟一句 `RUN test -f dist/index.html && test -f dist/favicon.svg && test -f dist/favicon.ico && test -f dist/apple-touch-icon.png && test -d dist/assets` —— 少拷 `public/` 或产物结构变了就**在构建阶段炸**，不必等线上"图标还是旧的"（与 §3.3 那条真 404 加固是一对：一个让错响亮，一个让错根本进不来）。改了 `public/` 记得同步改这行。
+
 镜像源走腾讯云 npm registry（`registry.npmmirror.com` 或 `mirrors.cloud.tencent.com/npm/`）与 NJU docker 镜像，避免国内超时。
 
 ### 8.2 docker-compose.yml 要点
@@ -830,6 +837,55 @@ chat.<域名> {
 ```
 
 Caddy 需处理 SSE：默认 `flush_interval -1` 对流式响应是安全的；若发现缓冲，显式加 `reverse_proxy chatlite:80 { flush_interval -1 }`。
+
+### 8.4 重建镜像后的两条自检（v2.10 加固，必跑）
+
+⚠️ Caddy 前面有 `basic_auth`（§8.3），而 Caddy 的 `basic_auth` 排在 `reverse_proxy` **之前**，
+所以**不带口令的 curl 一律 401，任何路径都一样 —— 它只说明口令闸门在正常工作，
+既不代表加固没生效，也不代表"没发布"**（实测：连 `/nope.svg` 这种不存在的路径也回 401；
+应用其实好好地跑着，内网直问是 200）。想看真实状态就走下面这两条 / §8.5。两种验法任选：
+
+```bash
+# A. 带口令走公网（把 用户:口令 换成 basic_auth 那一对）
+curl -sI -u '用户:口令' https://chat.<域名>/favicon.svg | head -1   # 期望 200
+curl -sI -u '用户:口令' https://chat.<域名>/nope.svg     | head -1   # 期望 404（仍是 200 = 没重建 / 没生效）
+
+# B. 不用口令：绕过 Caddy 直接问容器里的 nginx（服务名自动探测，一条可粘贴）
+cd <部署目录> && SVC=$(docker compose config --services | head -1) \
+&& for u in /favicon.svg /nope.svg /assets/nope.js; do printf '%-18s -> ' "$u"; \
+docker compose exec -T "$SVC" wget -S -O /dev/null "http://127.0.0.1$u" 2>&1 | grep -m1 -E 'HTTP/|server returned error'; done
+```
+
+判据：`/favicon.svg`（存在）→ `200`；`/nope.svg`（不存在）→ **`404`，不能再是 200**；
+`/assets/nope.js` → 404（`/assets/` 那条本来就这样，顺带做回归确认）。
+**加固生效后的直接红利**：以后"文件没打进镜像"这类问题，curl 一看就是 404，不会再被 200 的 HTML 骗过去。
+
+### 8.5 判"线上到底发的哪一版"（绕开口令、绕过浏览器缓存）
+
+**先记住一件事**：公网带不带口令都判不出版本 —— 口令走 §8.3 的闸门，缓存走 §3.3 的 `no-store`，
+两者都不告诉你"镜像里装的是哪一版"。**可靠的判法：从容器内网直接问 chat-lite 容器，再看产物文案。**
+
+```bash
+cd <部署目录> && SVC=$(docker compose config --services | head -1)
+
+# ① 当前入口引用的是哪个 bundle（哈希变了就是新产物）
+docker compose exec -T "$SVC" sh -c 'wget -qO- http://127.0.0.1/ | grep -oE "/assets/index-[A-Za-z0-9_-]+\.js" | head -1'
+
+# ② 抓那个 bundle，按"每个版本独有的文案"判断版本（把 <bundle> 换成上一行的输出）
+docker compose exec -T "$SVC" sh -c 'wget -qO- http://127.0.0.1<bundle> | grep -c "本轮输入合计"'
+```
+
+| 版本 | 独有文案（`grep -c` 为 1 才说明这版在里面） |
+| --- | --- |
+| v2.7 水位行口径 | `本轮输入合计`（旧字样 `本会话累计` / `缓存命中` 必须为 **0**） |
+| v2.9 相位分派 | `当前通道不支持补充信息`、`已中断这一轮` |
+| v2.10 静态资源加固 | 无前端文案 → 改用 `/nope.svg` 是否 **404** 判断（见 §8.4） |
+
+**实测示例（2026-09-15，PR #17 已合并但未重建时）**：bundle 仍是 `index-CarQVqMx.js`，
+`本轮输入合计`=1、`已中断这一轮`=0、`当前通道不支持补充信息`=0 ⟹ **"合并了但没发布"**，
+一句话定位，不用猜（这也是"合并 ≠ 发布"这个常见误会的判别手法）。
+
+---
 
 ---
 
@@ -1081,3 +1137,9 @@ node verdict.cjs before.json after.json     # 修复后应输出 PASS ✅
    **两个可复用的教训**：① "DOM 分波长高"这类 bug 只能靠真浏览器 + 拦截 `scrollTop`/`MutationObserver` 抓（jsdom 不做布局，永远抓不到）；② 核验时当"锚"的元素**不能用会被重构的容器** —— prepend 会让相邻 assistant 合并、`.md-body` 的首句都变了（踩过两次），要用**叶子元素的文本指纹**去定位同一个点。
 
 51. **★ 单元测试"绿"不等于接线对** → 坑 50 的第一版修复：单测全绿，真浏览器无效。因为测试里我手动调用 RO 回调（模拟浏览器行为），而**应用代码根本没 observe 对元素** —— 测试验证的是"收到通知后逻辑对不对"，没验证"通知会不会来"。修法：给假的 `ResizeObserver` 记录 `observe()` 到的元素，断言"内容容器确实被观察到了"。**凡是"事件驱动的修复"，都要有一条断言锁住"事件源确实接上了"**，否则测试只能证明逻辑本身自洽。
+
+52. **★★ `usage.input_tokens` 是"这一轮里各次 API 调用 prompt 的累加"，不是一次 prompt，更不是"会话累计"（v2.7 修）** → 水位行曾把它当"当前上下文占用"除以窗口 ⇒ 显示 `2.6m/1m [██████] 100%`，看着像爆了。实测那一轮 30 次调用合计 **2,573,021（≈2.6m）**，而**单次最大 prompt 只有 125,071（≈12.5%）**。HTTP 层**拿不到**"当前上下文占用"（只有轮末 usage），所以前端只能显示"本轮输入合计"这类量，**不能出现百分比/进度条**（`ContextGauge.vue` 2026-09-15 起的形态）。
+53. **★★ 往"正在跑的一轮"里插消息，HTTP 层只有一个端点：`steer`** → `POST /v1/runs/{id}/steer`：不打断、文本挂到**最近一条工具结果**末尾、模型下一次迭代可见（系统提示词里 `## Mid-turn user steering` 明确告诉模型"这是用户本轮指令、不是工具输出、也不是注入"）。两个落空点：① 本轮**没有工具调用** → 文本留到轮末，随 `run.completed.pending_steer` 回传（本客户端**按口径忽略**：不重发、不提示，代码里写明了"别当遗漏去修"）；② run 刚好收尾 → `409 run_not_accepting_steer`（静默降级，不留假气泡）。**"打断 + 把这句话并进同一轮"是内部的 `AIAgent.redirect()`（dashboard 默认 busy 策略走它），HTTP 未暴露**；而再 `POST /v1/runs` 是**并发第二条 run**（实测两条都 `running`、历史落库交叉），**不能当补充用**。按钮按相位分派的口径见 §5.5。
+54. **★ 本地反代核验脚本必须删掉 `Origin` / `Referer`** → 否则浏览器发来的请求带 `Origin`，被 API Server 的 CORS 防护直接 **403 空响应**（与坑 21 同源，线上 nginx 就是 `proxy_set_header Origin "";`）。症状是页面报"请求被 Hermes 的 CORS 防护拒绝（403），反代必须清掉它" —— **极易误判成前端 bug**。自建 node 代理里 `delete headers.origin; delete headers.referer` 即可。
+55. **★ 真浏览器核验脚本里两个"恒假"陷阱** → ① 用 `.group` 选择器断言**用户**气泡恒为 false：`MessageItem` 只有助手消息那一支带 `.group`，用户消息是另一个分支 ⇒ 断言永远看不到那句话、却很容易误报成"功能没生效"（改用 `document.body.innerText.includes(文本)`）；② 走自建代理时不修坑 54，整页从第一帧就是错误态，后面所有断言都跑在"假现场"上。两个都实测踩过一遍。
+56. **★ 用 crossplane 解析这份 `nginx.conf` 会"假失败"** → 它是**片段**（运行时被官方镜像入口脚本塞进 `http{}`），单独 parse 会报 `"upstream"/"server" directive is not allowed here`，**错误行指向的正是文件里本来就有的 upstream/server**，别误判成自己改坏了。正确姿势：`{ echo 'events {}'; echo 'http {'; sed 's/\${HERMES_API_SERVER_KEY}/FAKEKEY/g' nginx.conf; echo '}'; } > /tmp/w.conf` 再 `crossplane parse /tmp/w.conf`，`status: ok` 才算过；顺带能把每个 `location` 的**顺序**打出来，用来确认正则优先级。

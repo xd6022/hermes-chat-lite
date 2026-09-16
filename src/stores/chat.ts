@@ -798,10 +798,16 @@ interface TurnCtx {
   segs: UiMessage[]
   /** runs 通道的 run_id（中断 / 审批回话都要它） */
   runId: string | null
-  /** 收到过终止事件（run.completed / run.failed / run.cancelled / error） */
+  /** 收到过终止事件（run.completed / run.failed / run.cancelled / run.interrupted / error） */
   sawTerminal: boolean
   /** 这一轮被取消（服务端 run.cancelled）—— 不能算"完成" */
   cancelled: boolean
+  /**
+   * 服务端把这一轮标成 `interrupted`（v0.21.3 新增终态）：**网关在这一轮跑完之前重启**。
+   * 与 `cancelled` 同属"没跑完"，但成因不同（不是用户主动停的），所以单独一个标记，
+   * 不复用 `cancelled` —— 免得以后想看"谁把它弄停的"时分辨不出来。
+   */
+  interrupted: boolean
   sawError: boolean
   /**
    * 错误来自**客户端这边的传输层**（fetch 被网络/浏览器打断），不是服务端告诉我们失败。
@@ -816,6 +822,17 @@ interface TurnCtx {
 function lastSeg(ctx: TurnCtx): UiMessage {
   const last = ctx.segs[ctx.segs.length - 1]
   return last ?? openTextSeg(ctx)
+}
+
+/**
+ * 把界面上最后一个助手段贴上「已中断」。
+ *
+ * 恢复路径（`applyRunStatus`）没有 `TurnCtx`，用不了 `lastSeg()`，所以单独给一个。
+ * 只找 assistant 段：被中断的那一轮，尾巴一定是助手侧的内容（正文段或工具行段）。
+ */
+function markLastSegInterrupted(): void {
+  const last = [...store.messages].reverse().find((m) => m.role === 'assistant')
+  if (last) last.interrupted = true
 }
 
 /**
@@ -1041,6 +1058,14 @@ function applyEvent(ctx: TurnCtx, name: string, data: unknown): void {
       ctx.cancelled = true
       break
     }
+    case 'run.interrupted': {
+      // v0.21.3 新增终态事件：网关在这一轮跑完之前重启。
+      // 现实里网关重启通常会把事件流一起掐断，所以这条多半只在"晚订阅拿到缓冲帧"时才见；
+      // 但必须算 sawTerminal —— 否则流正常收尾时会被判成"完成"，把半截正文当答案。
+      ctx.sawTerminal = true
+      ctx.interrupted = true
+      break
+    }
     case 'error': {
       ctx.sawTerminal = true
       ctx.sawError = true
@@ -1234,9 +1259,16 @@ function readActiveRun(): ActiveRunRecord | null {
   }
 }
 
-/** 服务端状态里哪些算"已经不会再变" */
+/**
+ * 服务端状态里哪些算"已经不会再变"。
+ *
+ * `interrupted`（v0.21.3 新增）**必须算终态**：它是"网关在这一轮跑完之前重启"时服务端给的
+ * 终态（`api_server_runs.py` 的 error 文案 "The gateway restarted before this run settled."）。
+ * 漏掉它的后果不是"显示得差一点"，而是**卡死** —— 这里判成"还在跑" ⇒ 相位停在
+ * `background`、记录不清、退避轮询永不停止（界面一直转圈，只能靠强刷脱身）。
+ */
 function isTerminalStatus(s: string): boolean {
-  return s === 'completed' || s === 'failed' || s === 'cancelled'
+  return s === 'completed' || s === 'failed' || s === 'cancelled' || s === 'interrupted'
 }
 
 let watchTimer = 0
@@ -1277,6 +1309,7 @@ async function recoverTurn(sid: string, sentText: string): Promise<boolean> {
     runId: null,
     sawTerminal: true,
     cancelled: false,
+    interrupted: false,
     sawError: false,
     transportError: false,
     usage: null,
@@ -1337,6 +1370,15 @@ async function applyRunStatus(rec: ActiveRunRecord): Promise<boolean> {
     store.run.errorMessage = m
     store.run.endedAt = performance.now()
   } else if (st?.status === 'cancelled') {
+    store.run.phase = 'aborted'
+    store.run.endedAt = performance.now()
+  } else if (st?.status === 'interrupted') {
+    // v0.21.3 新增终态：网关在这一轮跑完之前重启了（服务端已把它判死）。
+    // 按"已中断"收尾，但**先把服务端已落库的部分对账回来** —— 这类中断本地流多半也断了，
+    // 界面可能只有半截正文、甚至一个字都没有，而与 completed/failed 不同的是：
+    // 这一轮永远不会再产出内容了。
+    await recoverTurn(rec.sessionId, rec.sentText)
+    markLastSegInterrupted()
     store.run.phase = 'aborted'
     store.run.endedAt = performance.now()
   } else {
@@ -1597,6 +1639,7 @@ export async function send(text: string): Promise<void> {
     runId: null,
     sawTerminal: false,
     cancelled: false,
+    interrupted: false,
     sawError: false,
     transportError: false,
     usage: null,
@@ -1671,6 +1714,18 @@ export async function send(text: string): Promise<void> {
         } else if (st.status === 'cancelled') {
           ctx.sawTerminal = true
           ctx.cancelled = true
+        } else if (st.status === 'interrupted') {
+          // v0.21.3 新增终态：网关在本轮跑完前重启。**不能**落到下面的 else 当成"还在跑"，
+          // 否则相位被强制成 background、记录留着、退避轮询再也不停。
+          ctx.sawTerminal = true
+          ctx.interrupted = true
+          // 网关重启会把本地流一起掐断 → 那个"失败红字"是传输层造成的假报错（跟 completed 同理）。
+          // 不清掉的话相位会停在 'error'，把"被重启打断"显示成"这一轮失败"。
+          if (ctx.transportError) {
+            ctx.sawError = false
+            lastSeg(ctx).error = null
+            store.run.errorMessage = null
+          }
         } else {
           stillRunning = true // running / queued / waiting_for_approval
         }
@@ -1686,12 +1741,15 @@ export async function send(text: string): Promise<void> {
 
     if (!ctx.sawError) {
       // 显式完成态判定：只有收到【完成类】终止事件才算真正完成；
-      // 被服务端取消（run.cancelled）或用户点过停止 → 一律算中断。
-      store.run.phase = ctx.cancelled || stopRequested || !ctx.sawTerminal ? 'aborted' : 'done'
+      // 被服务端取消（run.cancelled）、被网关重启打断（run.interrupted）或用户点过停止
+      // → 一律算中断。
+      store.run.phase =
+        ctx.cancelled || ctx.interrupted || stopRequested || !ctx.sawTerminal ? 'aborted' : 'done'
     }
     // 被打断的那一轮贴「已中断」标记（对齐 dashboard 的 `· interrupted`）；
-    // 只认"用户点了暂停"或"服务端取消了"，不把"流丢了但服务端还在跑"算进来。
-    if (ctx.cancelled || stopRequested) lastSeg(ctx).interrupted = true
+    // 只认"用户点了暂停"、"服务端取消了"或"网关重启把它打断了"，
+    // 不把"流丢了但服务端还在跑"算进来。
+    if (ctx.cancelled || ctx.interrupted || stopRequested) lastSeg(ctx).interrupted = true
 
     if (stillRunning && !stopRequested) {
       // ★ 服务端那一轮还在跑：界面必须如实说"还在后台执行"，而不是"中断"。
@@ -1713,8 +1771,10 @@ export async function send(text: string): Promise<void> {
     // 覆盖式同步：断线时 reconcileTurn 从历史重建的那份也在这里统一成同一形状。
     syncToolsToMsg(ctx)
 
-    if (ctx.sawTerminal && !ctx.sawError && !ctx.cancelled) {
+    if (ctx.sawTerminal && !ctx.sawError && !ctx.cancelled && !ctx.interrupted) {
       // 每轮统计：耗时 / 输入 / 输出 / 缓存命中率（取本轮结束后的累计计数做差）
+      // 注意：只给"真正跑完"的轮次 —— 被取消 / 被网关重启打断的那一轮，计数是半截的，
+      // 算出来会误导（与 run.cancelled 同口径）。
       const after = await counters(sid)
       // 每轮统计挂在**本轮的最后一个段**上（页脚位置：正文之后、工具行之后都自然）
       lastSeg(ctx).stats = buildStats({

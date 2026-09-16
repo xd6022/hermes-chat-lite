@@ -401,6 +401,25 @@ describe('/v1/runs 通道：中断与断线恢复', () => {
     expect(mod.store.run.phase).toBe('aborted')
     expect(mod.store.messages[1].stats).toBeUndefined()
   })
+
+  /**
+   * v0.21.3 新增的终态事件：网关在**这一轮跑完之前重启**时，服务端把该 run 记为
+   * status=interrupted、事件 run.interrupted，error 文案 "The gateway restarted before this run settled."
+   * 它是真终态，和"还在跑"必须分开 —— 否则这一轮会被判成继续等待（界面一直转圈）。
+   */
+  it('★ run.interrupted（网关重启导致的终态）→ 判为中断并贴「已中断」，不能算完成', async () => {
+    opts.events = [
+      ev('message.delta', { delta: '半截正文' }),
+      ev('run.interrupted', { error: 'The gateway restarted before this run settled.' }),
+    ]
+    const mod = await freshRuns()
+    await mod.send('hi')
+
+    expect(mod.store.run.phase).toBe('aborted') // 已中断，不是完成、也不是"还在跑"
+    expect(mod.store.messages[1].stats).toBeUndefined()
+    // 与"用户点暂停"同一种呈现：轮末贴「已中断」，否则半截正文看起来像正常答完
+    expect(mod.store.messages[1].interrupted).toBe(true)
+  })
 })
 
 describe('回退开关', () => {

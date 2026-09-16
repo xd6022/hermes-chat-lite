@@ -437,3 +437,55 @@ describe('用户主动停止（测试 5：不能因为这次修复而失效）',
     expect(storedRecord()).toBeNull()
   })
 })
+
+/**
+ * v0.21.3 新增终态 status=interrupted：**网关在这一轮跑完之前重启**时服务端这么标
+ * （`api_server_runs.py`：error 文案 "The gateway restarted before this run settled."）。
+ *
+ * 为什么单独一组：它以前不在这套代码的"终态"清单里（只认 completed/failed/cancelled），
+ * 于是被当成"还在跑" —— 相位卡在 background、记录不清、退避轮询永不停止（界面一直转圈）。
+ * 这条路径正好撞在"改插件/配置/升级就重启服务"的日常上。
+ */
+describe('网关重启把这一轮标成 interrupted（新终态）', () => {
+  it('★ 恢复时拿到 interrupted → 按「已中断」收尾、清记录（不能卡在"后台执行中"）', async () => {
+    const mod = await freshRuns()
+    statusQueue = [{ run_id: RUN_ID, status: 'running' }]
+    await mod.send(SENT)
+    expect(mod.store.run.phase).toBe('background')
+
+    statusQueue = [
+      { run_id: RUN_ID, status: 'interrupted', error: 'The gateway restarted before this run settled.' },
+    ]
+    await mod.resumeSync()
+
+    expect(mod.store.run.phase).toBe('aborted') // 🟠 已中断
+    expect(mod.store.run.endedAt).toBeGreaterThan(0)
+    expect(storedRecord()).toBeNull() // 记录清了 ⇒ watchRun 不会再排下一轮询问
+    const last = [...mod.store.messages].reverse().find((m) => m.role === 'assistant')
+    expect(last?.interrupted).toBe(true) // 轮末贴「已中断」，别让半截正文看起来像答完了
+  })
+
+  it('★ 流断后 send() 收尾拿到 interrupted → 不判"还在跑"（这条以前会一直转圈）', async () => {
+    const mod = await freshRuns()
+    streamMode = 'die'
+    statusQueue = [
+      { run_id: RUN_ID, status: 'interrupted', error: 'The gateway restarted before this run settled.' },
+    ]
+    await mod.send(SENT)
+
+    expect(mod.store.run.phase).toBe('aborted')
+    expect(storedRecord()).toBeNull()
+  })
+
+  it('★ interrupted 之后不再退避轮询（60 秒内没有新的状态请求）', async () => {
+    vi.useFakeTimers()
+    const mod = await freshRuns()
+    streamMode = 'die'
+    statusQueue = [{ run_id: RUN_ID, status: 'interrupted' }]
+    await mod.send(SENT)
+    const settled = calls.filter((c) => c === `GET /v1/runs/${RUN_ID}`).length
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(calls.filter((c) => c === `GET /v1/runs/${RUN_ID}`).length).toBe(settled)
+  })
+})

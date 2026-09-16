@@ -180,7 +180,7 @@ export interface RunSubmitResponse {
 export interface RunStatusResponse {
   object?: string
   run_id: string
-  status: string // queued | running | waiting_for_approval | completed | failed | cancelled
+  status: string // queued | running | waiting_for_approval | completed | failed | cancelled | interrupted
   created_at?: number
   updated_at?: number
   session_id?: string

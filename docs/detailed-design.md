@@ -1295,3 +1295,17 @@ v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openS
    `<span>{{ avatar }}</span>\n<span>🟡</span>` 编译后 `textContent` 是 `-_-🟡`（**没有空格**）——
    视觉上的间距来自 CSS `gap`，不是文本。所以断言要么按内容比（`replace(A,'').replace(B,'').trim() === ''`），
    要么 `not.toContain`；**别写 `toBe('-_- 🟡')`**（这条实测红了一次，看着像功能坏了，其实是断言错）。
+68. **★ 服务端新增终态 `interrupted` 没接住 ⇒ 界面永久卡在"忙碌中"（2026-09-16 修，v0.21.3 起）** →
+   v0.21.3 给 `/v1/runs` 加了新终态：**网关在这一轮跑完之前重启**时，服务端把该 run 记为
+   `status=interrupted` 并发事件 `run.interrupted`（`api_server_runs.py` 的 error 文案
+   *"The gateway restarted before this run settled."*）。这套代码当时只把
+   `completed/failed/cancelled` 当终态，于是**四个判据点同时漏**，表现不是"显示得差一点"而是**卡死**：
+   ① `isTerminalStatus()` 判成"还在跑" ⇒ 恢复时相位停在 `background`；
+   ② `send()` 收尾的 status 分支落到 `else` ⇒ `stillRunning=true` 又强制回 `background`；
+   ③ 每轮统计的判据（`sawTerminal && !sawError && !cancelled`）⇒ 给半截的轮次算了统计；
+   ④ 网关重启会掐断本地流，那个"失败红字"是传输层假报错，没清 ⇒ 看起来像这一轮失败了。
+   合起来：`activeRun` 记录不清、**退避轮询永不停止**（实测 60 秒里 6 次状态请求，只能强刷脱身）。
+   修法 = 终态清单加 `interrupted` + 单独一个 `ctx.interrupted` 标记（**不复用 `cancelled`**：同呈现、不同成因）
+   + 归到 🟠「已中断」并贴轮末「已中断」+ 统计只给真正跑完的轮次。
+   **教训：服务端加新终态时，先把"status 比较点"全找一遍再动手**
+   （`grep -n "isTerminalStatus\|status === '" src/`），别只改第一处 —— 这次就是一处声明、三处调用、两个分支各漏一次。

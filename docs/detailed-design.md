@@ -59,7 +59,9 @@
 **下一步**：① 合并 `fix/scroll-anchor-stable` → 宿主机 `docker compose up -d --build` → 真机上点开几个会话确认"都落到底部"（本容器已用真内核验过：距底全部 0）；② P5 Caddy basic_auth；③ 候选：服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
 > **前端真浏览器验证已不再依赖 browser-use**：本容器 browser-use 守护进程会整体卡死，改用容器内自带的 `chrome-headless-shell` + Playwright 直连（`executablePath`）跑真实内核，方法/脚本见 §10.3；卡死时别反复重试，直接走这条。
-> 现成装备（2026-09-14 备好）：内核 `/opt/hermes/.playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell`；驱动 `/opt/data/.verify/pw/bin/python`（uv venv 里装的 playwright，复用上面那个内核、不用下载）。可直接抄的脚本：`/opt/data/.verify/chatlite_live/real_browser_ctx.py`（几何/配色断言）、`verify_live_dom.mjs`（jsdom 真 DOM + 真 API）、`stub_gateway.py`（本地桩：静态产物 + `/api/model-info`→9119 + 其余→8642，绑内核分配端口并自报家门）。
+> 现成装备（2026-09-14 备好）：内核 `/opt/hermes/.playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell`
+> —— **别写死目录名里的版本号**（playwright 升级会改，实测 `-1234` → `-1243`），探针里用 `readdirSync` 自动发现，见坑 66；
+> 驱动 `/opt/data/.verify/pw/bin/python`（uv venv 里装的 playwright，复用上面那个内核、不用下载）。可直接抄的脚本：`/opt/data/.verify/chatlite_live/real_browser_ctx.py`（几何/配色断言）、`verify_live_dom.mjs`（jsdom 真 DOM + 真 API）、`stub_gateway.py`（本地桩：静态产物 + `/api/model-info`→9119 + 其余→8642，绑内核分配端口并自报家门）。
 
 **可复制命令**：
 

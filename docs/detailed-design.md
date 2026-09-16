@@ -42,6 +42,8 @@
 
 | P27 输入框下方提示词 + 工具调用不再上屏状态条（v2.13，`chore/input-hint-and-tool-line`） | 🟡 代码完成，**待合并部署** | `InputBox.vue` 去掉常驻装饰文案，提示行只在 `steerUnsupported` 时出现（加 `data-testid`）；`RunStatus.vue` 工具相位改「正在执行工具…」**不报工具名**、撤掉 `toolPreview` tooltip（思考相位同样不报名） | 单测 **274**（新增 5 条）+ **RED/GREEN（还原 2 个源文件 → 5 条新断言全红）** + `vite build` + 产物自检（`刷新/切后台`/`Enter 发送`/`正在使用` 各 **0**，`正在执行工具` **1**）+ **真浏览器 10/10**（打真模型真工具）：输入框下方文本块为空、工具期状态条 `正在执行工具… 7.3s` 且几何上确在 textarea 上方、状态条无工具名泄漏、计时仍在走、同名工具在对话流里可见；`pageerror` 无。详见坑 65 |
 
+| P28 四态状态灯 + 每轮一个状态戳（v2.14，`feat/turn-status-light`） | 🟡 代码完成，**待合并部署** | 新 `lib/turnStatus.ts`（四态判据纯函数）+ `components/TurnMark.vue`（轮首戳）+ `lib/appearance.ts`（头像默认值，Settings 可覆盖）+ `chat.ts` 新增 `retryTurn()`；`RunStatus.vue` 状态行改四态且**常驻**；`ChatWindow.vue` 挂轮首戳（`markOf`）；`App.vue` Settings 加「头像」项 | 单测 **299**（新增 25 条：`lib/turnStatus.spec` 15 + `components/TurnMark.spec` 5 + 改写的 RunStatus 组件用例）+ **RED/GREEN（还原 4 个源文件 → 9 条组件级新断言全红）** + `vite build` + 产物自检（`🔵` / `正在执行工具` / `正在使用` / `刷新/切后台` 各 **0**，四态词各就位）+ **真浏览器 5/5**（打真模型真工具）：空闲 `🟢空闲中` 常驻且全屏无 🔵、发一句 `🟡忙碌中 1.4s` 且灯在动、跑完回 `🟢空闲中`、中途暂停 `🟠已中断`（不是红）、每轮都有轮首戳且历史轮保留自身状态；`pageerror` 无。详见 §5.6 |
+
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
 ### 0.1 跨会话续接（接手先读这段，再读对应阶段章节）
@@ -57,7 +59,9 @@
 **下一步**：① 合并 `fix/scroll-anchor-stable` → 宿主机 `docker compose up -d --build` → 真机上点开几个会话确认"都落到底部"（本容器已用真内核验过：距底全部 0）；② P5 Caddy basic_auth；③ 候选：服务端会话搜索（需改 Hermes 源码，按"不改 Hermes"原则暂不做）。
 
 > **前端真浏览器验证已不再依赖 browser-use**：本容器 browser-use 守护进程会整体卡死，改用容器内自带的 `chrome-headless-shell` + Playwright 直连（`executablePath`）跑真实内核，方法/脚本见 §10.3；卡死时别反复重试，直接走这条。
-> 现成装备（2026-09-14 备好）：内核 `/opt/hermes/.playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell`；驱动 `/opt/data/.verify/pw/bin/python`（uv venv 里装的 playwright，复用上面那个内核、不用下载）。可直接抄的脚本：`/opt/data/.verify/chatlite_live/real_browser_ctx.py`（几何/配色断言）、`verify_live_dom.mjs`（jsdom 真 DOM + 真 API）、`stub_gateway.py`（本地桩：静态产物 + `/api/model-info`→9119 + 其余→8642，绑内核分配端口并自报家门）。
+> 现成装备（2026-09-14 备好）：内核 `/opt/hermes/.playwright/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell`
+> —— **别写死目录名里的版本号**（playwright 升级会改，实测 `-1234` → `-1243`），探针里用 `readdirSync` 自动发现，见坑 66；
+> 驱动 `/opt/data/.verify/pw/bin/python`（uv venv 里装的 playwright，复用上面那个内核、不用下载）。可直接抄的脚本：`/opt/data/.verify/chatlite_live/real_browser_ctx.py`（几何/配色断言）、`verify_live_dom.mjs`（jsdom 真 DOM + 真 API）、`stub_gateway.py`（本地桩：静态产物 + `/api/model-info`→9119 + 其余→8642，绑内核分配端口并自报家门）。
 
 **可复制命令**：
 
@@ -543,17 +547,33 @@ export interface UiMessage {
 
 目标：任何时候用户都能回答两个问题——**"现在在干什么？"** 和 **"这轮到底结束了没有？"**
 
-**状态条**（位于输入框上方，固定一行高，不占布局）：
+**状态行**（位于输入框上方，**常驻**一行；2026-09-16 起只有**四个状态**）：
 
-| 阶段 | 显示 |
-| --- | --- |
-| 等待首字 | `⏳ 正在思考… 3.2s`（`message.started` 后启动计时器） |
-| 模型思考 | `💭 正在思考… 5.1s`（`tool.progress` 且 `tool_name === "_thinking"`） |
-| 工具执行 | `🔧 正在执行工具… 6.4s`（`tool.started`）—— **刻意不报工具名**（2026-09-16 起）：工具身份（名称 + 参数预览）只在对话流的内联工具行里，上面再写一遍就是同一条信息两副面孔。这一行留下的意义是"这一轮还活着 + 已经跑了多久" |
-| 工具完成 | `✓ write_file 完成 · 下一个…`（仅更新文本，不新增行） |
-| 正文生成 | `✍️ 正在输出… 12.0s`（收到 `assistant.delta` 后切换，计时器继续走） |
-| 本轮结束 | `✓ 完成 · 12.3s · 5 个工具调用`，**常驻显示在最后一条消息下方**（下次发送时才消失） |
-| 异常结束 | `⚠️ 回复中断（未收到 run.completed）` 或 `✗ 出错：<message>` |
+| 灯 | 状态词 | 什么时候 | 判据（全在 `lib/turnStatus.ts`） |
+| --- | --- | --- | --- |
+| 🟢 | `空闲中` | **默认态** —— 没有在跑的任务。就是用户要的 `Ready` 式正向信号 | `phase === 'idle'` 或 `'done'` |
+| 🟡 | `忙碌中 {secs}s` | 这一轮在跑；灯**在动**（`animate-pulse`） | `thinking` / `tool` / `writing` / `background` |
+| 🟠 | `等待审批` 或 `已中断` | 等你介入，或这一轮被停 | `approval` / `aborted` |
+| 🔴 | `失败（请重试）` 或 `失败` | 出错、后端不可用 | `error`；**`runId === null` 时才给「重试」按钮** |
+
+**四条硬口径（改这一节之前先读）：**
+
+1. **正文结束就回到 🟢 空闲中**（用户原话）⇒ 状态行**常驻**：不再"空闲时隐藏"，也没有"停留 N 秒后收起"那套逻辑。
+2. **灯不看工具**（用户原话："不记录工具，不记录是否在调用工具，第一版做最简单的"）⇒
+   状态词里没有工具名，**词汇表里没有蓝色**（🔵 已整条撤掉）；工具行也**不动**（保持 v2.11 现状）。
+3. **红灯的判据**：只有 `phase === 'error'` 才红。
+   **"连接断了但服务端还在跑"（`background`）是 🟡 忙碌中，绝不红** —— 切后台/锁屏/换网是常态，
+   报红会让人以为跑着的长任务白费了（2026-09-13 真机纠偏过这条）。
+4. **「重试」只在 `runId === null` 时给**（服务端**根本没收到**才重发；已收到、可能已落库 ⇒ 重发会出现两条输入）。
+   点击走 `retryTurn()`（`stores/chat.ts`）：撤回最后那条乐观用户消息（`splice`）+ 清 `bootError` + 原样重发。
+
+**轮首戳**（`TurnMark.vue`，2026-09-16 新增）：每一轮开头 `{头像} {灯}` —— 同一套四态、**只给灯不写状态词**。
+分工：**轮首戳答"这是哪一轮、它怎么了"**（永久痕迹），**状态行答"现在忙不忙"**（瞬时）。
+- 只有**最后一轮**用实时相位（正在跑的就是它；`openSession()` 会把相位重置为 `idle`，所以切会话不会误亮）；
+  终态轮从消息里推：有错误段 → 🔴、有「已中断」标记 → 🟠、否则 🟢。**全是从现成数据算的，没有任何新状态。**
+- **固定占一行高**（跑着时那一行就在，跑完只换颜色）⇒ **零高度变化**，不动 v2.6 那套贴底/锚定。
+- 头像默认 `-_-`，`lib/appearance.ts` 放默认值 + Settings 可覆盖（存浏览器，**改完立刻生效、不用重新构建**）。
+- 取舍（用户已接受）：轮首戳在长轮次会滚出视口；主需求"要不要等"由位置固定的状态行覆盖。
 
 **完成态判定（必须显式，不能靠"没动静了"猜）：**
 
@@ -1267,3 +1287,11 @@ v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openS
    先剥标记再切分：`t.replace(/^[●✓✗]\s*/, '').split(/\s+/)[0]`。
    同一次还踩了个更基础的：打印时用了快照对象的**原始字段名**（`a.wrapperHasHint`）而不是算好的派生字段
    （`out.A.wrapperHasHint`）⇒ 输出 `undefined`，而 SUMMARY 里其实是 `false`。**先看 SUMMARY 再下结论。**
+66. **★ 真浏览器探针别写死 `chrome-headless-shell` 的路径**（2026-09-16 踩到） → playwright 升级会把目录名里的
+   版本号改掉（实测 `chromium_headless_shell-1234` → `-1243`），写死路径的探针直接报
+   `browserType.launch: Failed to launch chromium because executable doesn't exist` —— 看着像浏览器没了，
+   其实只是换了目录。**自动发现**：`fs.readdirSync('/opt/hermes/.playwright').filter(d => d.startsWith('chromium_headless_shell-')).sort()` 取最后一个。
+67. **★ Vue 会把元素之间的空白"压缩掉"，断言"这一行只有 A 和 B"时别按空格数写**（2026-09-16 踩到） →
+   `<span>{{ avatar }}</span>\n<span>🟡</span>` 编译后 `textContent` 是 `-_-🟡`（**没有空格**）——
+   视觉上的间距来自 CSS `gap`，不是文本。所以断言要么按内容比（`replace(A,'').replace(B,'').trim() === ''`），
+   要么 `not.toContain`；**别写 `toBe('-_- 🟡')`**（这条实测红了一次，看着像功能坏了，其实是断言错）。

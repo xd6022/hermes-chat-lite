@@ -42,9 +42,11 @@ const active = computed(() =>
 )
 
 /*
- * 工具调用**不再在这里列**（v2.3）：内联渲染在它所属的那条回复下面（见 MessageItem
- * 的"工具调用"折叠块）。这里只负责"现在在干什么 / 这一轮结束了没"。
- * 两处都列 = 同一条信息两副面孔，而且多轮之后看不出工具属于哪一轮。
+ * 工具调用**不在这里列**（v2.3 去掉时间线；2026-09-16 再连工具名一起去掉）：
+ * 它内联渲染在对话流里（v2.11 起是常驻小字行，见 MessageItem 的工具行段），
+ * 这里只负责"现在在干什么 / 这一轮结束了没"。
+ * 两处都列 = 同一条信息两副面孔，而且多轮之后看不出工具属于哪一轮 ——
+ * 工具身份（名称 + 参数预览）一律以对话流里那一行为准。
  */
 
 /** 审批卡片：服务端给的可选项里有没有这一项 */
@@ -76,9 +78,13 @@ const label = computed(() => {
   const r = store.run
   switch (r.phase) {
     case 'thinking':
-      return r.currentTool ? `正在使用 ${r.currentTool}…` : '正在思考…'
+      return '正在思考…'
     case 'tool':
-      return r.currentTool ? `正在使用 ${r.currentTool}…` : '正在执行工具…'
+      // 工具相位**不在这里报工具名**（2026-09-16 用户要求：工具的调用显示在对话上，不显示在输入框上面）。
+      // v2.11 起工具调用已内联在对话流里（`● 名称 "参数预览"`，见 MessageItem 的工具行段），
+      // 这里再写一遍就是同一条信息两副面孔。保留这一行只为"这一轮还活着 + 已经跑了多久"，
+      // 工具身份（名称/参数）一律去对话流里看。
+      return '正在执行工具…'
     case 'approval':
       return `等待你批准：${r.approval?.toolName ?? '危险操作'}`
     case 'writing':
@@ -130,7 +136,7 @@ const tone = computed(() => {
   >
     <div class="flex items-center gap-2 text-xs" :class="tone">
       <span v-if="active" class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-      <span class="truncate" :title="store.run.toolPreview ?? ''">{{ label }}</span>
+      <span class="truncate">{{ label }}</span>
       <span v-if="active" class="tabular-nums text-gray-400 dark:text-gray-500">{{ secs }}</span>
     </div>
 

@@ -154,3 +154,40 @@ describe('审批卡片', () => {
     expect(w.text()).not.toContain('run.completed')
   })
 })
+
+/**
+ * 工具调用与状态条（2026-09-16 用户口径：工具的调用显示在对话上，不显示在输入框上面）。
+ * v2.11 起工具调用已内联在对话流里 ⇒ 状态条不再重复工具身份，只留"这一轮还活着 + 跑了多久"。
+ */
+describe('状态条不重复工具调用', () => {
+  it('工具相位：不报工具名，参数预览也不再挂 tooltip', () => {
+    store.run.phase = 'tool'
+    store.run.currentTool = 'bash'
+    store.run.toolPreview = 'ls -la /tmp'
+    const w = mount(RunStatus)
+    const line = w.find('[data-testid="run-status"]')
+    expect(line.exists()).toBe(true)
+    expect(line.text()).toContain('正在执行工具')
+    expect(line.text()).not.toContain('正在使用')
+    expect(line.text()).not.toContain('bash')
+    expect(w.html()).not.toContain('ls -la /tmp')
+  })
+
+  it('思考相位：不报工具名', () => {
+    store.run.phase = 'thinking'
+    store.run.currentTool = 'write_file'
+    const w = mount(RunStatus)
+    expect(w.find('[data-testid="run-status"]').text()).toContain('正在思考')
+    expect(w.text()).not.toContain('write_file')
+  })
+
+  it('计时保留：工具相位照样走秒（"跑了多久"没丢），但工具名不出现', () => {
+    store.run.phase = 'tool'
+    store.run.currentTool = 'bash'
+    store.run.startedAt = performance.now() - 3000
+    const w = mount(RunStatus)
+    const line = w.find('[data-testid="run-status"]')
+    expect(line.text()).toMatch(/\d+\.\d+s/) // 秒表还在
+    expect(line.text()).not.toContain('bash') // 工具名不在
+  })
+})

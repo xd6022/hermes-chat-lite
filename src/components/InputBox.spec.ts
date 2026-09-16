@@ -285,3 +285,33 @@ describe('InputBox：按钮/Enter 按相位分派（2026-09-15 用户口径）',
     expect(h.steer).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * 输入框下方的提示行（2026-09-16 用户口径：提示词换展示方式或直接去掉）。
+ * 常驻装饰文案去掉；只有"通道不支持补充"这种有功能含义的警告才出现。
+ */
+describe('输入框下方提示行', () => {
+  function running(phase: 'tool'): void {
+    store.streaming = true
+    store.run.phase = phase
+    store.run.runId = 'run_x'
+  }
+
+  it('常驻提示文案已去掉（不再有「刷新/切后台…」与 Enter 快捷键小字）', () => {
+    const w = mount(InputBox)
+    expect(w.text()).not.toContain('刷新/切后台')
+    expect(w.text()).not.toContain('Enter 发送')
+    expect(w.find('[data-testid="steer-unsupported"]').exists()).toBe(false)
+  })
+
+  it('功能警告保留，且是那时输入框下方唯一的文案（不再拖装饰尾巴）', () => {
+    setSendTransport('stream')
+    running('tool')
+    const w = mount(InputBox)
+    const warn = w.find('[data-testid="steer-unsupported"]')
+    expect(warn.exists()).toBe(true)
+    expect(warn.text()).toBe('当前通道不支持补充信息（只能暂停本轮）')
+    expect(w.text()).not.toContain('刷新/切后台')
+    expect(w.text()).not.toContain('Enter 发送')
+  })
+})

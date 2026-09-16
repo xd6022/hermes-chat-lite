@@ -40,6 +40,8 @@
 | P25 按时间交错渲染（v2.11，`feat/interleaved-render`） | 🟡 代码完成，**待合并部署** | `UiMessage.kind`（`text`/`tools`）+ `normalize()` 改为按时间切段 + `prependEarlier()` 只在同 kind 合并 + `TurnCtx.segs` 与 `openTextSeg/sealTextSeg/toolsSegFor/replaceTurnSegs`（流式期即交错、轮末用 transcript 整批重建）+ 新 `lib/turns.ts`（按轮分组）+ `MessageItem` 删折叠开关、工具行改常驻小字行 + `ChatWindow` 按轮渲染（轮内 `space-y-2`／轮间 `mt-6`） | 单测 **245**（新增 `lib/turns.spec.ts` 5 条、改写 12 条旧断言）+ **RED/GREEN（还原 3 个源文件 → 12 条核心断言全红）** + `vite build`（`工具调用 (` 0 命中）+ **真浏览器**：段序与服务端 transcript **逐轮完全一致**（11/11）、工具行 0 折叠开关且全部可见、轮内 8px < 轮间 24px、实时一轮中途即 `text→tools` 跑完 `text→tools→text`、滚动锚定无回归（落底 距底 0、上滚不被拽回）。详见 §5.13 |
 | P26 地址即状态（v2.12，`feat/url-as-state`） | ✅ 完成（2026-09-15，待部署） | 新 `lib/route.ts`（手写 hash 路由，不引 vue-router）+ `Notice.vue`（5 秒自动消失/点击即消失）+ `App.vue` 的 `applyRoute()`（**打开会话的唯一入口**）+ `Sidebar` 改走导航（点行 push、「新对话」不再预建空会话）+ `chat.ts`（`openSession` 返回 `{ok,missing}`、新增 `goHome()`、`resumeSync` 不再自动切会话） | 单测 **269**（新增 `route.spec` 11 + `Notice.spec` 5 + `App.spec` 地址组 6，改写 `resume.spec` 3 条旧口径）+ **RED/GREEN（还原 3 个源文件 → 7 条新断言全红）** + `vite build` + **真浏览器 9/9**：刷新落原会话 / 切到 B 再刷新落 B / 返回键回 A / 无效 id → 欢迎页+裸域名+提示（5 秒消失、点击即消失）/「新对话」不新建空会话 / 跑着时切会话地址撤回不打断、刷新后接上（`phase=background`）；`pageerror` 无。详见 §5.14 |
 
+| P27 输入框下方提示词 + 工具调用不再上屏状态条（v2.13，`chore/input-hint-and-tool-line`） | 🟡 代码完成，**待合并部署** | `InputBox.vue` 去掉常驻装饰文案，提示行只在 `steerUnsupported` 时出现（加 `data-testid`）；`RunStatus.vue` 工具相位改「正在执行工具…」**不报工具名**、撤掉 `toolPreview` tooltip（思考相位同样不报名） | 单测 **274**（新增 5 条）+ **RED/GREEN（还原 2 个源文件 → 5 条新断言全红）** + `vite build` + 产物自检（`刷新/切后台`/`Enter 发送`/`正在使用` 各 **0**，`正在执行工具` **1**）+ **真浏览器 10/10**（打真模型真工具）：输入框下方文本块为空、工具期状态条 `正在执行工具… 7.3s` 且几何上确在 textarea 上方、状态条无工具名泄漏、计时仍在走、同名工具在对话流里可见；`pageerror` 无。详见坑 65 |
+
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
 ### 0.1 跨会话续接（接手先读这段，再读对应阶段章节）
@@ -532,7 +534,10 @@ export interface UiMessage {
 
 - `textarea` 高度自适应（`scrollHeight` 计算，上限 40vh 再减掉工具行高），超出后内部滚动。
 - 生成中：发送按钮变「停止」，点击 `stop()`；**输入框保持可输入**（只禁用发送，方便先打下一句），Enter 不再触发发送。
-- 输入框下方小字：`刷新/切后台不会取消任务（回来会自动同步） · Enter 发送 / Shift+Enter 换行`（v2.2 改：旧文案在"任务独立于前端连接"这个架构下已经不成立了）。
+- 输入框下方小字：**只在"当前通道不支持补充"时出现一句功能警告**（2026-09-16 起）。原来那句常驻的
+  `刷新/切后台不会取消任务（回来会自动同步） · Enter 发送 / Shift+Enter 换行` 已去掉 —— 它那两段各有归属
+  （前者 `RunStatus` 的 `background` 相位在真发生时会说，后者 Settings 的「快捷键」小节已列出），
+  留在输入框下面纯属噪音。去掉的是**装饰**，功能警告一个字不动。
 
 ### 5.6 `RunStatus.vue` —— 执行可观测性（针对 Open WebUI 的核心痛点）
 
@@ -543,8 +548,8 @@ export interface UiMessage {
 | 阶段 | 显示 |
 | --- | --- |
 | 等待首字 | `⏳ 正在思考… 3.2s`（`message.started` 后启动计时器） |
-| 模型思考 | `💭 正在思考… 5.1s`（`tool.progress` 且 `tool_name === "_thinking"`，可显示 `delta` 首行） |
-| 工具执行 | `🔧 正在使用 write_file… 6.4s`（`tool.started`，`preview` 作 tooltip） |
+| 模型思考 | `💭 正在思考… 5.1s`（`tool.progress` 且 `tool_name === "_thinking"`） |
+| 工具执行 | `🔧 正在执行工具… 6.4s`（`tool.started`）—— **刻意不报工具名**（2026-09-16 起）：工具身份（名称 + 参数预览）只在对话流的内联工具行里，上面再写一遍就是同一条信息两副面孔。这一行留下的意义是"这一轮还活着 + 已经跑了多久" |
 | 工具完成 | `✓ write_file 完成 · 下一个…`（仅更新文本，不新增行） |
 | 正文生成 | `✍️ 正在输出… 12.0s`（收到 `assistant.delta` 后切换，计时器继续走） |
 | 本轮结束 | `✓ 完成 · 12.3s · 5 个工具调用`，**常驻显示在最后一条消息下方**（下次发送时才消失） |
@@ -560,7 +565,10 @@ export interface UiMessage {
 | 流关闭（`reader.read()` done）且以上都没有 | ⚠️ 中断 |
 | 超过 5 分钟无任何事件 | ⚠️ 超时提示（**不自动中断请求**，可能确实在跑长命令） |
 
-**工具时间线**（可折叠，默认收起）：本轮所有 `tool.started`/`tool.completed` 按序记录，展开后是一行一个工具的流水（`5. write_file · /opt/data/x.py`）。`run.completed` 到达后，若需要结果，从 `messages` 里按 `tool_call_id` 回填状态✓/✗。这是"看清楚这轮干了什么"的地方，也是 Open WebUI 完全缺失的部分。
+**工具时间线**：**不在这个组件里**（v2.3 去掉这里的折叠块；2026-09-16 连状态条上的工具名也一起去掉）。
+工具按真实先后**内联渲染在对话流里**（v2.11 起的常驻小字行：`●/✓/✗ 名称 "参数预览" (耗时)`，见 §5.13 与 `MessageItem`），
+`run.completed` 到达后从 `messages` 里按 `tool_call_id` 回填状态 ✓/✗。
+这是"看清楚这轮干了什么"的地方，也是 Open WebUI 完全缺失的部分 —— 但它属于**对话流**，不属于状态条。
 
 **注意**：计时器用 `performance.now()` 本地算，不要依赖事件里的 `ts`（时钟/网络抖动会让它跳变）。
 
@@ -1253,3 +1261,9 @@ v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openS
    凡是断言"启动态/空态"的新用例，`beforeEach` 里要显式把 `store` 清干净（`currentId/messages/sessions/run`），
    否则 RED 阶段会给出**假通过**。（另：探针脚本忘写 `server.listen()` 会得到 `ERR_CONNECTION_REFUSED`，
    看着像前端崩溃 —— 先查探针自己。）
+65. **★ 核验"工具名有没有上屏"时，探针自己会假失败（2026-09-16 踩到）** → 内联工具行的文本是
+   `● terminal "sleep 12"`，**标记与名称之间有空格**：按 `' '` 切分取 `[0]` 得到的是圆点本身，
+   工具名集合恒为空串 ⇒ "工具名在对话流里可见"这条断言**假失败**（看着像功能没生效，其实是探针解析错）。
+   先剥标记再切分：`t.replace(/^[●✓✗]\s*/, '').split(/\s+/)[0]`。
+   同一次还踩了个更基础的：打印时用了快照对象的**原始字段名**（`a.wrapperHasHint`）而不是算好的派生字段
+   （`out.A.wrapperHasHint`）⇒ 输出 `undefined`，而 SUMMARY 里其实是 `false`。**先看 SUMMARY 再下结论。**

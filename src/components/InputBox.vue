@@ -227,9 +227,18 @@ defineExpose({ fill })
         </button>
       </div>
     </div>
-    <p class="mt-1.5 text-center text-[11px] text-gray-400 dark:text-gray-500">
-      <template v-if="steerUnsupported">当前通道不支持补充信息（只能暂停本轮） · </template>
-      刷新/切后台不会取消任务（回来会自动同步） · Enter 发送 / Shift+Enter 换行
+    <!--
+      提示行只在**有功能含义**时出现（2026-09-16 用户要求：提示词换展示方式或直接去掉）。
+      常驻那行装饰文案已去掉 —— 它那两段各有归属，不必在输入框下面重复：
+        · 「刷新/切后台不会取消任务」→ RunStatus 的 background 相位在真的发生时会说；
+        · 「Enter 发送 / Shift+Enter 换行」→ Settings 的「快捷键」小节已列出。
+    -->
+    <p
+      v-if="steerUnsupported"
+      data-testid="steer-unsupported"
+      class="mt-1.5 text-center text-[11px] text-gray-400 dark:text-gray-500"
+    >
+      当前通道不支持补充信息（只能暂停本轮）
     </p>
   </div>
 </template>

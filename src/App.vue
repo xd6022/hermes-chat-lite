@@ -15,6 +15,7 @@ import { checkHealth, clearBootError, goHome, loadSessions, openSession, resumeS
 import { currentRoute, markInitialRoute, navigate, onRouteChange, type Route } from './lib/route'
 import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
+import { avatar, DEFAULT_AVATAR, resetAvatar, setAvatar } from './lib/appearance'
 
 // 构建时注入（见 vite.config.ts 的 define）—— 顶栏那串小字就是它：
 // "手机上是哪一版"一眼可见，不用再靠猜（踩过：手机缓存旧入口 HTML）
@@ -23,6 +24,20 @@ const buildShort = __BUILD_SHORT__
 
 const drawer = ref(false)
 const settings = ref(false)
+/**
+ * 头像草稿（Settings 里那个输入框）—— 用独立变量而不是直接绑 `avatar`，
+ * 否则清空输入框会被立刻弹回默认值，没法边打边改。
+ */
+const avatarDraft = ref(avatar.value)
+
+function onAvatarInput(): void {
+  setAvatar(avatarDraft.value) // 每敲一下就生效（"立马改"）
+}
+
+function onAvatarReset(): void {
+  resetAvatar()
+  avatarDraft.value = DEFAULT_AVATAR
+}
 
 /** 桌面端侧栏折叠状态（持久化；移动端不用这个） */
 const SIDEBAR_KEY = 'hcl.sidebar'
@@ -251,6 +266,36 @@ onBeforeUnmount(() => {
               切换
             </button>
           </div>
+        </section>
+
+        <section>
+          <h3 class="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">头像</h3>
+          <div class="flex items-center gap-2">
+            <span
+              data-testid="avatar-preview"
+              class="w-10 shrink-0 truncate rounded bg-gray-100 px-1 py-0.5 text-center dark:bg-gray-800"
+              >{{ avatar }}</span
+            >
+            <input
+              v-model="avatarDraft"
+              data-testid="avatar-input"
+              type="text"
+              maxlength="8"
+              :placeholder="DEFAULT_AVATAR"
+              class="min-w-0 flex-1 rounded border border-gray-300 bg-transparent px-2 py-0.5 outline-none focus:border-gray-400 dark:border-gray-700 dark:focus:border-gray-600"
+              @input="onAvatarInput()"
+            />
+            <button
+              type="button"
+              class="shrink-0 rounded px-2 py-0.5 text-xs text-gray-500 transition hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+              @click="onAvatarReset()"
+            >
+              默认
+            </button>
+          </div>
+          <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            每轮对话开头那个标记。改完立刻生效（存在这台浏览器里，不用重新构建）。
+          </p>
         </section>
 
         <section>

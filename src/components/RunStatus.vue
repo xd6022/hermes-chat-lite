@@ -1,23 +1,32 @@
 <script setup lang="ts">
 /**
  * 执行可观测性（设计文档 5.6）—— 回答两个问题：
- *   "现在在干什么？"  → 状态条（阶段 + 计时 + 当前工具）
- *   "这轮到底结束了没？" → 显式完成态（只有收到 run.completed 才叫完成）
+ *   "现在在干什么？"  → **状态行**（四态灯 + 中文状态词 + 计时）
+ *   "这轮到底结束了没？" → 灯色（🟢 空闲中 / 🟡 忙碌中 / 🟠 等审批·已中断 / 🔴 失败）
+ *
+ * 2026-09-16 改版（用户拍板）：
+ *  · 词汇表砍到**四态**，🟢 从"完成"变成"**空闲中**"（正文结束就回空闲）——
+ *    于是这一行**常驻**（不再"空闲时隐藏"，也不再"停留 3 秒后收起"）；
+ *  · 灯**不看工具**（"不记录工具，不记录是否在调用工具"）⇒ 状态词里没有工具名，也没有蓝色；
+ *  · 判据全在 `lib/turnStatus.ts`（纯函数、逐条单测），这里只负责画。
  *
  * 计时用 performance.now() 本地算，不用事件里的 ts（时钟/网络抖动会跳）。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { respondApproval, store } from '../stores/chat'
+import { respondApproval, retryTurn, store } from '../stores/chat'
+import { runStatus } from '../lib/turnStatus'
 import type { ApprovalChoice } from '../api/types'
 
 const tick = ref(0)
 let timer: number | undefined
 /** 审批回话进行中（防重复点击） */
 const answering = ref(false)
+/** 重试进行中（防重复点击） */
+const retrying = ref(false)
 
 onMounted(() => {
   timer = window.setInterval(() => {
-    tick.value++
+    tick.value++ // 只为驱动秒表刷新
   }, 200)
 })
 onBeforeUnmount(() => {
@@ -25,28 +34,49 @@ onBeforeUnmount(() => {
 })
 
 const elapsed = computed(() => {
-  void tick.value // 只为驱动刷新
+  void tick.value
   const { startedAt, endedAt } = store.run
   if (!startedAt) return 0
   const end = endedAt || performance.now()
   return Math.max(0, (end - startedAt) / 1000)
 })
 
-const secs = computed(() => `${elapsed.value.toFixed(1)}s`)
+/** 四态灯 + 状态词（判据见 lib/turnStatus.ts；这一行**常驻**，空闲时是 🟢 空闲中） */
+const status = computed(() => {
+  void tick.value
+  return runStatus({ phase: store.run.phase, seconds: elapsed.value, runId: store.run.runId })
+})
 
-const active = computed(() =>
-  // 等审批时这一轮仍然"活着"（服务端卡在那儿等人回话），所以计时继续走
-  // background（v2.2）：本地连接断了但服务端还在跑 —— 也是"活着"，计时继续走
-  ['thinking', 'tool', 'approval', 'writing', 'background'].includes(store.run.phase) ||
-  store.streaming,
-)
+/**
+ * 文字色调跟灯走。
+ * 空闲中**刻意最安静**（灰）—— 它是默认态，不该抢注意力。
+ */
+const tone = computed(() => {
+  switch (status.value.light) {
+    case 'red':
+      return 'text-red-600 dark:text-red-400'
+    case 'orange':
+      return 'text-amber-600 dark:text-amber-400'
+    case 'yellow':
+      return 'text-gray-500 dark:text-gray-400'
+    default:
+      return 'text-gray-400 dark:text-gray-500'
+  }
+})
+
+function onRetry(): void {
+  if (retrying.value) return
+  retrying.value = true
+  void retryTurn().finally(() => {
+    retrying.value = false
+  })
+}
 
 /*
- * 工具调用**不在这里列**（v2.3 去掉时间线；2026-09-16 再连工具名一起去掉）：
+ * 工具调用**不在这里列**（v2.3 去掉时间线；2026-09-16 起连工具名也不再出现 —— 用户口径"不记工具"）：
  * 它内联渲染在对话流里（v2.11 起是常驻小字行，见 MessageItem 的工具行段），
- * 这里只负责"现在在干什么 / 这一轮结束了没"。
- * 两处都列 = 同一条信息两副面孔，而且多轮之后看不出工具属于哪一轮 ——
- * 工具身份（名称 + 参数预览）一律以对话流里那一行为准。
+ * 这里只负责"忙不忙 / 这轮结束了没"。
+ * 两处都列 = 同一条信息两副面孔，而且多轮之后看不出工具属于哪一轮。
  */
 
 /** 审批卡片：服务端给的可选项里有没有这一项 */
@@ -73,71 +103,36 @@ function answer(c: ApprovalChoice): void {
     answering.value = false
   })
 }
-
-const label = computed(() => {
-  const r = store.run
-  switch (r.phase) {
-    case 'thinking':
-      return '正在思考…'
-    case 'tool':
-      // 工具相位**不在这里报工具名**（2026-09-16 用户要求：工具的调用显示在对话上，不显示在输入框上面）。
-      // v2.11 起工具调用已内联在对话流里（`● 名称 "参数预览"`，见 MessageItem 的工具行段），
-      // 这里再写一遍就是同一条信息两副面孔。保留这一行只为"这一轮还活着 + 已经跑了多久"，
-      // 工具身份（名称/参数）一律去对话流里看。
-      return '正在执行工具…'
-    case 'approval':
-      return `等待你批准：${r.approval?.toolName ?? '危险操作'}`
-    case 'writing':
-      return '正在输出…'
-    case 'background':
-      // v2.2：连接断了，但**服务端那一轮还在跑**（手机切后台的常态）。
-      // 措辞要明确"任务没失败、也没丢"，否则用户会以为白跑了。
-      return r.syncing
-        ? '已重新连接，正在同步最新消息…'
-        : '连接已暂时中断，任务仍在后台执行（回到页面会自动同步）'
-    case 'done':
-      // 完成后的数字（耗时/token/缓存）在消息下方常驻显示，这里不重复
-      return '完成'
-    case 'aborted':
-      // 不暴露内部事件名（用户 2026-09-15 要求）；措辞与消息上的「已中断」标记一致
-      return '已中断这一轮'
-    case 'error':
-      return `出错：${r.errorMessage ?? '未知错误'}`
-    default:
-      return ''
-  }
-})
-
-const tone = computed(() => {
-  switch (store.run.phase) {
-    case 'done':
-      return 'text-gray-500 dark:text-gray-400'
-    case 'background':
-      // 蓝色=进行中（不是错误也不是中断）：任务还在后台跑
-      return 'text-sky-700 dark:text-sky-400'
-    case 'aborted':
-    case 'approval':
-      return 'text-amber-600 dark:text-amber-400'
-    case 'error':
-      return 'text-red-600 dark:text-red-400'
-    default:
-      return 'text-gray-500 dark:text-gray-400'
-  }
-})
 </script>
 
 <template>
-  <!-- data-phase 给自动化用（真浏览器用例要靠它断言"现在是哪种状态"），与 data-testid 同惯例 -->
+  <!-- data-phase 给自动化用（真浏览器用例要靠它断言"现在是哪种状态"），与 data-testid 同惯例。
+       2026-09-16 起这一块**常驻**（空闲时显示 🟢 空闲中）⇒ 不再有 v-if 隐藏。 -->
   <div
-    v-if="store.run.phase !== 'idle'"
     data-testid="run-status"
     :data-phase="store.run.phase"
+    :data-light="status.light"
     class="mx-auto w-full max-w-chat px-4 pb-1"
   >
+    <!-- 状态行：一眼一行 —— 灯 + 状态词（+ 失败时才有的「重试」）。
+         进行中时灯本身做脉冲（"在动"是用户硬要求：静态黄灯跟"卡住了"长得一样）。 -->
     <div class="flex items-center gap-2 text-xs" :class="tone">
-      <span v-if="active" class="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-      <span class="truncate">{{ label }}</span>
-      <span v-if="active" class="tabular-nums text-gray-400 dark:text-gray-500">{{ secs }}</span>
+      <span
+        data-testid="turn-light"
+        class="shrink-0 select-none"
+        :class="status.pulse ? 'animate-pulse' : ''"
+      >{{ status.icon }}</span>
+      <span class="truncate">{{ status.text }}</span>
+      <button
+        v-if="status.retry"
+        type="button"
+        data-testid="retry"
+        :disabled="retrying"
+        class="shrink-0 rounded border border-red-400/70 bg-white px-2 py-0.5 font-medium text-red-700 transition hover:bg-red-50 disabled:opacity-50 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300 dark:hover:bg-red-950/60"
+        @click="onRetry()"
+      >
+        重试
+      </button>
     </div>
 
     <!-- 安全闸门拦截说明：工具被拒时得说清"为什么"（否则只看到一个 ✗）。审批类文案按当前通道分，见 lib/security.ts -->

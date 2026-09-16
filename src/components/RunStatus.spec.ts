@@ -124,11 +124,16 @@ describe('审批卡片', () => {
     expect(w.findAll('button').length).toBeGreaterThan(0)
   })
 
-  it('等审批时状态条显示"等待你批准"，并按进行中计时', () => {
+  // 2026-09-16 A 方案：审批时状态词**不带工具名** —— 下面那张卡片的标题已经在说同一个名字了
+  it('等审批时状态条说「等待审批」（不带工具名），灯转橙', () => {
     withApproval()
     store.run.startedAt = performance.now() - 1500
     const w = mount(RunStatus)
-    expect(w.text()).toContain('等待你批准：terminal')
+    // 只看状态行那一行（容器里还装着审批卡片，卡片里有工具名是应该的）
+    const row = w.find('[data-testid="turn-light"]').element.parentElement as HTMLElement
+    expect(row.textContent).toContain('等待审批')
+    expect(row.textContent).not.toContain('terminal')
+    expect(w.find('[data-testid="run-status"]').attributes('data-light')).toBe('orange')
   })
 
   it('没有审批时卡片不出现（正常轮不打扰）', () => {
@@ -147,11 +152,62 @@ describe('审批卡片', () => {
     expect(w.text()).toContain('已从服务端会话记录同步回来')
   })
 
-  it('aborted：状态条说「已中断这一轮」，且不暴露内部事件名', () => {
+  it('aborted：状态条说「已中断」，灯是橙的（不是失败，所以不红）', () => {
     store.run.phase = 'aborted'
     const w = mount(RunStatus)
-    expect(w.find('[data-testid="run-status"]').text()).toContain('已中断这一轮')
-    expect(w.text()).not.toContain('run.completed')
+    const line = w.find('[data-testid="run-status"]')
+    expect(line.text()).toContain('已中断')
+    expect(line.text()).not.toContain('run.completed')
+    expect(line.attributes('data-light')).toBe('orange')
+  })
+})
+
+/**
+ * 2026-09-16 四态改版：状态行**常驻**（空闲时 🟢 空闲中），红灯的判据与「重试」按钮。
+ * 判据本身在 `lib/turnStatus.spec.ts` 里逐条锁；这里只验"组件有没有照它画出来"。
+ */
+describe('状态行常驻与红灯重试（2026-09-16）', () => {
+  const rowOf = (w: ReturnType<typeof mount>) =>
+    (w.find('[data-testid="turn-light"]').element.parentElement as HTMLElement).textContent ?? ''
+
+  it('空闲时也显示 🟢 空闲中（常驻，不再"空闲就隐藏"）', () => {
+    store.run.phase = 'idle'
+    const w = mount(RunStatus)
+    expect(w.find('[data-testid="run-status"]').exists()).toBe(true)
+    expect(rowOf(w)).toContain('空闲中')
+    expect(w.find('[data-testid="turn-light"]').text()).toBe('🟢')
+  })
+
+  it('done 之后回到 🟢 空闲中（用户原话：正文结束了就恢复到空闲）', () => {
+    store.run.phase = 'done'
+    const w = mount(RunStatus)
+    expect(rowOf(w)).toContain('空闲中')
+    expect(w.find('[data-testid="run-status"]').attributes('data-light')).toBe('green')
+  })
+
+  it('忙碌中带秒表，且灯是在动的那种（animate-pulse）', () => {
+    store.run.phase = 'tool'
+    store.run.startedAt = performance.now() - 2400
+    const w = mount(RunStatus)
+    expect(rowOf(w)).toMatch(/忙碌中 \d+\.\ds/)
+    expect(w.find('[data-testid="turn-light"]').classes()).toContain('animate-pulse')
+  })
+
+  it('runId 为 null（服务端根本没收到）→ 红灯带「重试」', () => {
+    store.run.phase = 'error'
+    store.run.runId = null
+    const w = mount(RunStatus)
+    expect(rowOf(w)).toContain('失败（请重试）')
+    expect(w.find('[data-testid="retry"]').exists()).toBe(true)
+  })
+
+  it('runId 非 null（已收到、可能已落库）→ 红灯**不出**「重试」（重发会造成两条输入）', () => {
+    store.run.phase = 'error'
+    store.run.runId = 'run_abc'
+    const w = mount(RunStatus)
+    expect(rowOf(w)).toContain('失败')
+    expect(rowOf(w)).not.toContain('请重试')
+    expect(w.find('[data-testid="retry"]').exists()).toBe(false)
   })
 })
 
@@ -160,24 +216,26 @@ describe('审批卡片', () => {
  * v2.11 起工具调用已内联在对话流里 ⇒ 状态条不再重复工具身份，只留"这一轮还活着 + 跑了多久"。
  */
 describe('状态条不重复工具调用', () => {
-  it('工具相位：不报工具名，参数预览也不再挂 tooltip', () => {
+  it('工具相位：不报工具名，参数预览也不再挂 tooltip（2026-09-16：连"正在执行工具"也换成四态词汇）', () => {
     store.run.phase = 'tool'
     store.run.currentTool = 'bash'
     store.run.toolPreview = 'ls -la /tmp'
     const w = mount(RunStatus)
     const line = w.find('[data-testid="run-status"]')
     expect(line.exists()).toBe(true)
-    expect(line.text()).toContain('正在执行工具')
+    expect(line.text()).toContain('忙碌中')
     expect(line.text()).not.toContain('正在使用')
+    expect(line.text()).not.toContain('正在执行工具')
     expect(line.text()).not.toContain('bash')
     expect(w.html()).not.toContain('ls -la /tmp')
+    expect(line.attributes('data-light')).toBe('yellow')
   })
 
   it('思考相位：不报工具名', () => {
     store.run.phase = 'thinking'
     store.run.currentTool = 'write_file'
     const w = mount(RunStatus)
-    expect(w.find('[data-testid="run-status"]').text()).toContain('正在思考')
+    expect(w.find('[data-testid="run-status"]').text()).toContain('忙碌中')
     expect(w.text()).not.toContain('write_file')
   })
 

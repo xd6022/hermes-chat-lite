@@ -1535,6 +1535,34 @@ function markToolDone(name: string, status: 'ok' | 'fail'): void {
   store.run.toolPreview = null
 }
 
+/** 最后一条用户消息的下标（重试用） */
+function lastUserIndex(): number {
+  for (let i = store.messages.length - 1; i >= 0; i--) {
+    if (store.messages[i].role === 'user') return i
+  }
+  return -1
+}
+
+/**
+ * 重试这一轮（状态行红灯上那个按钮）。
+ *
+ * **只对"服务端根本没收到"的情况开放**（`runId === null`）：把最后那条用户消息连同
+ * 它之后的段一起撤回，再原样重发 —— 不会留下两条相同的输入。
+ *
+ * 服务端若已收到（`runId` 非 null），这里直接返回（按钮也不会出现）：
+ * 重发会造成两条输入，比"少一个按钮"糟得多。
+ */
+export async function retryTurn(): Promise<void> {
+  if (store.streaming || store.run.runId !== null) return
+  const idx = lastUserIndex()
+  if (idx < 0) return
+  const text = store.messages[idx].content
+  // 这一轮压根没到过服务端，撤回是安全的（splice 到末尾：连带它后面那点错误段一起走）
+  store.messages.splice(idx)
+  clearBootError()
+  await send(text)
+}
+
 export async function send(text: string): Promise<void> {
   const content = text.trim()
   // background = 上一轮还在服务端跑着（v2.2）：不能开第二轮，先等它结束或点停止

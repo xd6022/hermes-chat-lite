@@ -249,3 +249,36 @@ describe('状态条不重复工具调用', () => {
     expect(line.text()).not.toContain('bash') // 工具名不在
   })
 })
+
+describe('RunStatus：状态行与「模型/窗口/本轮输入合计」是同一行（2026-09-17 合并）', () => {
+  it('灯、状态词、模型/窗口/合计在**同一个 flex 容器**里，顺序＝灯 → 状态词 → 模型 → 窗口 → 合计', () => {
+    store.run.phase = 'idle'
+    Object.assign(store.context, { model: 'deepseek-flash', limit: 1_000_000, turnInput: 47_100 })
+    const w = mount(RunStatus)
+
+    const light = w.find('[data-testid="turn-light"]')
+    const gauge = w.find('[data-testid="ctx-gauge"]')
+    expect(gauge.exists()).toBe(true)
+    // 同一个父元素 ⇒ 同一行（原来 ContextGauge 是 ChatWindow 里单独的一行）
+    expect(gauge.element.parentElement).toBe(light.element.parentElement)
+
+    const row = light.element.parentElement as HTMLElement
+    expect(row.className).toContain('flex')
+    const text = (row.textContent ?? '').replace(/\s+/g, '')
+    expect(text.indexOf('时刻准备着')).toBeLessThan(text.indexOf('deepseek-flash'))
+    expect(text.indexOf('deepseek-flash')).toBeLessThan(text.indexOf('窗口1m'))
+    expect(text.indexOf('窗口1m')).toBeLessThan(text.indexOf('本轮输入合计47.1k'))
+  })
+
+  it('没有任何水位数据时，这一行只剩「灯 + 状态词」（不留孤零零的分隔符、不留空当）', () => {
+    store.run.phase = 'idle'
+    Object.assign(store.context, { model: null, limit: null, turnInput: null })
+    const w = mount(RunStatus)
+
+    const light = w.find('[data-testid="turn-light"]')
+    const row = light.element.parentElement as HTMLElement
+    expect(row.textContent).toContain('时刻准备着')
+    expect(row.textContent).not.toContain('│')
+    expect(w.find('[data-testid="ctx-gauge"]').exists()).toBe(false)
+  })
+})

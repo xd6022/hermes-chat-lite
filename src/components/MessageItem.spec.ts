@@ -161,3 +161,52 @@ describe('MessageItem：被打断的轮次要贴「已中断」（对齐 dashboa
     expect(w.find('[data-testid="msg-interrupted"]').exists()).toBe(false)
   })
 })
+
+describe('MessageItem：用户消息可以一键复制（2026-09-17 用户要求）', () => {
+  it('用户消息气泡下方有复制按钮；点击把**原文**写进剪贴板，标签变「已复制」', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.assign(navigator, { clipboard: { writeText } })
+    const w = mount(MessageItem, { props: { msg: ui({ role: 'user', content: '把这条复回去\n第二行' }) } })
+
+    const btn = w.find('[data-testid="copy-user"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toBe('复制')
+
+    await btn.trigger('click')
+    await vi.waitFor(() => expect(btn.text()).toBe('已复制'))
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(writeText).toHaveBeenCalledWith('把这条复回去\n第二行')
+  })
+
+  it('点完 1.5s 后标签自动变回「复制」（不用点第二次，也不留常驻状态）', async () => {
+    vi.useFakeTimers()
+    try {
+      Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
+      const w = mount(MessageItem, { props: { msg: ui({ role: 'user', content: 'hi' }) } })
+      const btn = w.find('[data-testid="copy-user"]')
+
+      await btn.trigger('click')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(btn.text()).toBe('已复制')
+
+      await vi.advanceTimersByTimeAsync(1600)
+      expect(btn.text()).toBe('复制')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('没有 clipboard API 时如实说「复制失败」（不假装成功）', async () => {
+    Object.assign(navigator, { clipboard: undefined })
+    const w = mount(MessageItem, { props: { msg: ui({ role: 'user', content: 'hi' }) } })
+    const btn = w.find('[data-testid="copy-user"]')
+
+    await btn.trigger('click')
+    await vi.waitFor(() => expect(btn.text()).toBe('复制失败'))
+  })
+
+  it('助手消息不出现复制按钮（只给我发出去的那半条）', () => {
+    const w = mount(MessageItem, { props: { msg: ui({ role: 'assistant', content: '回复' }) } })
+    expect(w.find('[data-testid="copy-user"]').exists()).toBe(false)
+  })
+})

@@ -17,10 +17,9 @@ import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
 import { avatar, DEFAULT_AVATAR, resetAvatar, setAvatar } from './lib/appearance'
 
-// 构建时注入（见 vite.config.ts 的 define）—— 顶栏那串小字就是它：
-// "手机上是哪一版"一眼可见，不用再靠猜（踩过：手机缓存旧入口 HTML）
+// 构建时注入（见 vite.config.ts 的 define）。
+// 2026-09-17 起**只在 Settings 里显示** —— 用户要求把顶栏那串小字移走（首屏不摆构建信息）。
 const buildId = __BUILD_ID__
-const buildShort = __BUILD_SHORT__
 
 const drawer = ref(false)
 const settings = ref(false)
@@ -165,9 +164,6 @@ onBeforeUnmount(() => {
         <span v-if="!store.healthOk">未连接</span>
         <span v-else-if="store.healthVersion">v{{ store.healthVersion }}</span>
         <span v-else>已连接</span>
-        <span class="text-gray-300 dark:text-gray-600" :title="`前端构建 ${buildId}`">
-          · {{ buildShort }}
-        </span>
       </span>
 
       <button

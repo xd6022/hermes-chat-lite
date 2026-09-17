@@ -7,8 +7,10 @@
  *      2026-09-15 查实：那一轮单次最大 prompt 只有 125k/1M）
  *  2. 任何数值都**不转黄、不转红** —— 整行一律灰（用户 2026-09-15 明确要求）
  *  3. 缺数据时的降级：没有分母就只显示模型名；有分母没本轮输入合计就显示 `—`；
- *     本地缓存恢复的值必须标"上次已知"（不许假装是实时值）；全空则整行不渲染
+ *     全空则整段不渲染（含前导分隔符，不留孤零零的 `│`）
  *  4. 分母/合计都拿不到时，不编任何数字
+ *  5. ⚠️ 2026-09-17 起**并入状态行**（原来自己占一行），且用户要求**不再显示「· 上次已知 HH:MM」**；
+ *     值仍可能来自本地缓存 —— 解释留在 tooltip 里（悬停才看得到），界面上不摆
  */
 import { beforeEach, describe, expect, it } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -66,12 +68,28 @@ describe('ContextGauge：模型 + 窗口 + 本轮输入合计', () => {
     expect(w.find('[data-testid="ctx-turn-input"]').text()).toBe('本轮输入合计 —')
   })
 
-  it('本地缓存恢复的值必须标"上次已知 + 时刻"（不假扮实时）', () => {
+  it('值是本地缓存来的 → **也不再显示「上次已知」那半句**（2026-09-17 用户要求去掉）', () => {
     const at = new Date(2026, 8, 14, 12, 34).getTime()
     setCtx({ model: 'm', limit: 1_000_000, turnInput: 500_000, stale: true, at })
     const w = mount(ContextGauge)
 
-    expect(w.find('[data-testid="ctx-stale"]').text()).toContain('上次已知 12:34')
+    // 数字照常显示，但那半句（连同它的 testid）不许再出现在界面上
+    expect(w.find('[data-testid="ctx-turn-input"]').text()).toBe('本轮输入合计 500k')
+    expect(w.find('[data-testid="ctx-stale"]').exists()).toBe(false)
+    expect(w.text()).not.toContain('上次已知')
+    // 诚实性没有丢：只是挪进 tooltip（悬停才看得到），界面不摆
+    expect(w.find('[data-testid="ctx-gauge"]').attributes('title')).toContain('上次已知')
+  })
+
+  it('前导分隔符只在有内容时出现 —— 全空时不渲染孤零零的 `│`', () => {
+    setCtx({})
+    expect(mount(ContextGauge).find('[data-testid="ctx-gauge"]').exists()).toBe(false)
+
+    setCtx({ model: 'm' })
+    const w = mount(ContextGauge)
+    // 有内容 → 恰好一个前导分隔符（把它和状态词隔开）
+    expect(w.text().startsWith('│')).toBe(true)
+    expect(w.text().split('│').length - 1).toBe(1)
   })
 
   it('什么数据都没有 → 整行不渲染（不占位）', () => {

@@ -20,7 +20,6 @@ import { groupIntoTurns } from '../lib/turns'
 import MessageItem from './MessageItem.vue'
 import TurnAvatar from './TurnAvatar.vue'
 import RunStatus from './RunStatus.vue'
-import ContextGauge from './ContextGauge.vue'
 import InputBox from './InputBox.vue'
 
 const scroller = ref<HTMLElement | null>(null)
@@ -262,10 +261,8 @@ function retry(): void {
       </div>
     </div>
 
-    <!-- 执行状态条 + 上下文水位 + 输入框 -->
+    <!-- 执行状态行（含模型/窗口/本轮输入合计，2026-09-17 并成一行）+ 输入框 -->
     <RunStatus />
-    <!-- 上下文水位：模型 + 已用/上限 + 方块条（照 dashboard 状态栏的读法），贴着输入框 -->
-    <ContextGauge />
     <InputBox ref="inputRef" />
   </section>
 </template>

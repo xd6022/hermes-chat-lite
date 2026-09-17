@@ -2,10 +2,10 @@
 /**
  * 执行可观测性（设计文档 5.6）—— 回答两个问题：
  *   "现在在干什么？"  → **状态行**（四态灯 + 中文状态词 + 计时）
- *   "这轮到底结束了没？" → 灯色（🟢 空闲中 / 🟡 忙碌中 / 🟠 等审批·已中断 / 🔴 失败）
+ *   "这轮到底结束了没？" → 灯色（🟢 时刻准备着 / 🟡 忙碌中 / 🟠 等审批·已中断 / 🔴 失败）
  *
  * 2026-09-16 改版（用户拍板）：
- *  · 词汇表砍到**四态**，🟢 从"完成"变成"**空闲中**"（正文结束就回空闲）——
+ *  · 词汇表砍到**四态**，🟢 从"完成"变成"**时刻准备着**"（正文结束就回空闲）——
  *    于是这一行**常驻**（不再"空闲时隐藏"，也不再"停留 3 秒后收起"）；
  *  · 灯**不看工具**（"不记录工具，不记录是否在调用工具"）⇒ 状态词里没有工具名，也没有蓝色；
  *  · 判据全在 `lib/turnStatus.ts`（纯函数、逐条单测），这里只负责画。
@@ -41,7 +41,7 @@ const elapsed = computed(() => {
   return Math.max(0, (end - startedAt) / 1000)
 })
 
-/** 四态灯 + 状态词（判据见 lib/turnStatus.ts；这一行**常驻**，空闲时是 🟢 空闲中） */
+/** 四态灯 + 状态词（判据见 lib/turnStatus.ts；这一行**常驻**，空闲时是 🟢 时刻准备着） */
 const status = computed(() => {
   void tick.value
   return runStatus({ phase: store.run.phase, seconds: elapsed.value, runId: store.run.runId })
@@ -49,7 +49,7 @@ const status = computed(() => {
 
 /**
  * 文字色调跟灯走。
- * 空闲中**刻意最安静**（灰）—— 它是默认态，不该抢注意力。
+ * 时刻准备着**刻意最安静**（灰）—— 它是默认态，不该抢注意力。
  */
 const tone = computed(() => {
   switch (status.value.light) {
@@ -107,7 +107,7 @@ function answer(c: ApprovalChoice): void {
 
 <template>
   <!-- data-phase 给自动化用（真浏览器用例要靠它断言"现在是哪种状态"），与 data-testid 同惯例。
-       2026-09-16 起这一块**常驻**（空闲时显示 🟢 空闲中）⇒ 不再有 v-if 隐藏。 -->
+       2026-09-16 起这一块**常驻**（空闲时显示 🟢 时刻准备着）⇒ 不再有 v-if 隐藏。 -->
   <div
     data-testid="run-status"
     :data-phase="store.run.phase"

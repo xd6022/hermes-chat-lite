@@ -17,9 +17,8 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { clearBootError, loadEarlier, loadModelInfo, loadSessions, openSession, store } from '../stores/chat'
 import { followUntilSettled } from '../lib/scroll-anchor'
 import { groupIntoTurns } from '../lib/turns'
-import { runStatus, type Light } from '../lib/turnStatus'
 import MessageItem from './MessageItem.vue'
-import TurnMark from './TurnMark.vue'
+import TurnAvatar from './TurnAvatar.vue'
 import RunStatus from './RunStatus.vue'
 import ContextGauge from './ContextGauge.vue'
 import InputBox from './InputBox.vue'
@@ -38,28 +37,6 @@ let ro: ResizeObserver | null = null
  * 分组是纯函数（`lib/turns.ts`），这里只负责把结果画出来。
  */
 const turns = computed(() => groupIntoTurns(store.messages))
-
-/**
- * 轮首戳的灯（2026-09-16）。
- *
- * **只有最后一轮**用实时相位 —— 正在跑的那一轮就是它；其余轮次早已是终态。
- * 之所以不需要"这一轮属于哪个会话"这种记录：`openSession()` 会把相位重置为 `idle`，
- * 所以切到别的会话时天然不会误亮（这也是"实时计算、不加缓存"能成立的原因）。
- *
- * 终态轮直接从消息里推：有错误段 → 🔴，有"已中断"标记 → 🟠，否则 🟢。
- * 这里**没有任何新状态**，全是从现成数据算出来的。
- */
-function markOf(i: number): Light {
-  const t = turns.value[i]
-  if (!t) return 'green'
-  if (i === turns.value.length - 1) {
-    // 只取灯色，不取状态词（秒数填 0 即可 —— 状态词由状态行统一说）
-    return runStatus({ phase: store.run.phase, seconds: 0, runId: store.run.runId }).light
-  }
-  if (t.segs.some((s) => s.error)) return 'red'
-  if (t.segs.some((s) => s.interrupted)) return 'orange'
-  return 'green'
-}
 
 /**
  * 划到顶部这个距离内就自动加载更早的历史（滚轮/触摸都一样触发）。
@@ -270,14 +247,14 @@ function retry(): void {
         -->
         <div class="min-w-0">
           <div
-            v-for="(t, i) in turns"
+            v-for="t in turns"
             :key="t.key"
             data-testid="turn"
             class="mt-6 min-w-0 space-y-2 first:mt-0"
           >
             <MessageItem v-if="t.ask" :msg="t.ask" />
-            <!-- 轮首戳：头像 + 状态灯（固定在助手一侧的开头；跑着时这一行就在，只换颜色） -->
-            <TurnMark :light="markOf(i)" />
+            <!-- 轮首头像：只回答"这是谁说的"；状态一律看输入框上方那条状态行 -->
+            <TurnAvatar />
             <MessageItem v-for="m in t.segs" :key="m.key" :msg="m" />
           </div>
         </div>

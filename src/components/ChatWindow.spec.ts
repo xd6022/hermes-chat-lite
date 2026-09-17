@@ -177,3 +177,34 @@ describe('ChatWindow：不再有「本会话累计」行（v2.8 按用户要求�
     expect('totals' in store).toBe(false)
   })
 })
+
+/**
+ * 轮首只剩头像（2026-09-16 用户定）。
+ *
+ * 原来这里是"头像 + 状态灯"，后来实测用出来：**灯和输入框上方那条状态行 100% 重叠**，
+ * 而且历史轮清一色 🟢 ⇒ 满屏绿点等于没信息。所以灯全撤，这里只锁两条：
+ *  ① 每一轮开头都有头像（`turn-avatar`）；
+ *  ② **轮首不许再出现状态灯**（旧的 `turn-mark-light` 不能再有）。
+ * 谁哪天想把灯加回来，先想清楚"和上面那条怎么分工"，别默默加。
+ */
+describe('ChatWindow：轮首只有头像', () => {
+  it('每一轮开头都是头像，且轮首不出现任何状态灯', () => {
+    store.messages = [
+      { key: 'u1', role: 'user', content: '第一问' },
+      { key: 'a1', role: 'assistant', content: '第一答' },
+      { key: 'u2', role: 'user', content: '第二问' },
+      { key: 'a2', role: 'assistant', content: '第二答' },
+    ]
+    const w = mount(ChatWindow)
+    const turns = w.findAll('[data-testid="turn"]')
+    expect(turns.length).toBe(2)
+    for (const t of turns) {
+      const avatar = t.find('[data-testid="turn-avatar"]')
+      expect(avatar.exists()).toBe(true)
+      // 头像那一行本身不许带灯（四态 + 已撤的蓝色，一个都不能有）
+      expect(avatar.text()).not.toMatch(/[🟢🟡🟠🔴🔵]/)
+    }
+    // 旧的轮首灯（`turn-mark-light`）整块不该存在
+    expect(w.find('[data-testid="turn-mark-light"]').exists()).toBe(false)
+  })
+})

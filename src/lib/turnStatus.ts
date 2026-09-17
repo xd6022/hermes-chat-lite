@@ -3,7 +3,7 @@
  *
  * 用户 2026-09-16 定的口径（"第一版做最简单的"）：
  *
- *   🟢 空闲中              默认态 —— 没有在跑的任务（"一眼知道我没在跑、可以发下一句"）
+ *   🟢 时刻准备着              默认态 —— 没有在跑的任务（"一眼知道我没在跑、可以发下一句"）
  *   🟡 忙碌中 {secs}s      这一轮在跑（含"连接暂断但服务端还在跑"）
  *   🟠 等待审批 / 已中断    等你介入，或这一轮被停
  *   🔴 失败（请重试）       出错 / 后端不可用
@@ -74,7 +74,7 @@ function fmt(seconds: number): string {
  * | `approval` | 🟠 `等待审批` |
  * | `aborted`  | 🟠 `已中断` |
  * | `error`    | 🔴 `失败（请重试）`（仅当 runId 为 null）/ 🔴 `失败` |
- * | `done` / `idle` | 🟢 `空闲中` —— **正文结束就回到空闲** |
+ * | `done` / `idle` | 🟢 `时刻准备着` —— **正文结束就回到空闲** |
  */
 export function runStatus({ phase, seconds, runId }: StatusInput): Status {
   switch (phase) {
@@ -107,10 +107,11 @@ export function runStatus({ phase, seconds, runId }: StatusInput): Status {
         ? make('red', '失败（请重试）', { retry: true })
         : make('red', '失败')
 
-    // 默认态：没有在跑的任务。`done` 也回落到这里 —— 用户原话"正文结束了，就恢复到绿色：空闲中"。
+    // 默认态：没有在跑的任务。`done` 也回落到这里 —— 用户原话"正文结束了，就恢复到绿色"。
+    // 文案是用户 2026-09-16 亲口定的："时刻准备着"（正合 `Ready` 那个正向信号的意思）。
     case 'done':
     case 'idle':
     default:
-      return make('green', '空闲中')
+      return make('green', '时刻准备着')
   }
 }

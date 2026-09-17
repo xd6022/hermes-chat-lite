@@ -11,17 +11,17 @@ import type { RunPhase } from '../stores/chat'
 
 const s = (phase: RunPhase, seconds = 0, runId: string | null = null) => runStatus({ phase, seconds, runId })
 
-describe('状态灯 · 空闲中（默认态）', () => {
-  it('idle → 🟢 空闲中，不脉冲、不给重试', () => {
+describe('状态灯 · 时刻准备着（默认态）', () => {
+  it('idle → 🟢 时刻准备着，不脉冲、不给重试', () => {
     const r = s('idle')
     expect(r.light).toBe('green')
     expect(r.icon).toBe('🟢')
-    expect(r.text).toBe('空闲中')
+    expect(r.text).toBe('时刻准备着')
     expect(r.pulse).toBe(false)
     expect(r.retry).toBe(false)
   })
 
-  it('done → 也回到 🟢 空闲中（用户原话：正文结束了就恢复到空闲）', () => {
+  it('done → 也回到 🟢 时刻准备着（用户原话：正文结束了就恢复到空闲）', () => {
     expect(s('done')).toEqual(s('idle'))
   })
 })

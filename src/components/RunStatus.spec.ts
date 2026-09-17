@@ -163,25 +163,25 @@ describe('审批卡片', () => {
 })
 
 /**
- * 2026-09-16 四态改版：状态行**常驻**（空闲时 🟢 空闲中），红灯的判据与「重试」按钮。
+ * 2026-09-16 四态改版：状态行**常驻**（空闲时 🟢 时刻准备着），红灯的判据与「重试」按钮。
  * 判据本身在 `lib/turnStatus.spec.ts` 里逐条锁；这里只验"组件有没有照它画出来"。
  */
 describe('状态行常驻与红灯重试（2026-09-16）', () => {
   const rowOf = (w: ReturnType<typeof mount>) =>
     (w.find('[data-testid="turn-light"]').element.parentElement as HTMLElement).textContent ?? ''
 
-  it('空闲时也显示 🟢 空闲中（常驻，不再"空闲就隐藏"）', () => {
+  it('空闲时也显示 🟢 时刻准备着（常驻，不再"空闲就隐藏"）', () => {
     store.run.phase = 'idle'
     const w = mount(RunStatus)
     expect(w.find('[data-testid="run-status"]').exists()).toBe(true)
-    expect(rowOf(w)).toContain('空闲中')
+    expect(rowOf(w)).toContain('时刻准备着')
     expect(w.find('[data-testid="turn-light"]').text()).toBe('🟢')
   })
 
-  it('done 之后回到 🟢 空闲中（用户原话：正文结束了就恢复到空闲）', () => {
+  it('done 之后回到 🟢 时刻准备着（用户原话：正文结束了就恢复到空闲）', () => {
     store.run.phase = 'done'
     const w = mount(RunStatus)
-    expect(rowOf(w)).toContain('空闲中')
+    expect(rowOf(w)).toContain('时刻准备着')
     expect(w.find('[data-testid="run-status"]').attributes('data-light')).toBe('green')
   })
 

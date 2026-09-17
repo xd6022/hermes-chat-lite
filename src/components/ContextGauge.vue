@@ -6,6 +6,12 @@
  * 它不再自己占一行（原来灯一行、这条一行），根元素就是一个 flex 项，**自带前导分隔符**；
  * 没有任何数据时整段不渲染 —— 也就不会在状态行尾巴上留下一个孤零零的 `│`。
  *
+ * ⚠️ 手机端（< lg = 1024px）两件事（2026-09-17 用户要求，**桌面一律不动**）：
+ *  - 整行**字号缩小**到 10px（与状态词同步，见 `RunStatus.vue`）⇒ 尽量挤成一行；
+ *  - **「窗口 1m」整段隐藏**（连同它**前面那个**分隔符一起藏 ⇒ 不会留下光杆 `│`）。
+ *    它是三段里唯一"可以不要"的 —— 模型名和合计都跟本轮 token 直接挂钩，窗口上限是固定值。
+ *    用 `max-lg:hidden`（Tailwind 3.2+ 的上界变体），**纯 CSS**：不改 vm、不影响 tooltip。
+ *
  * 三个数字三个来源（缺哪个就少显示哪段，**绝不编数字**）：
  *  - 模型：会话行 `session.model`（counters() 顺手带回来，不额外请求）
  *  - 上限：dashboard 后端 `/api/model-info` → `effective_context_length`（nginx 转发）
@@ -54,14 +60,15 @@ const vm = computed(() => {
   <div
     v-if="vm.show"
     data-testid="ctx-gauge"
-    class="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] leading-4 text-gray-400 dark:text-gray-500"
+    class="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] leading-4 text-gray-400 dark:text-gray-500 max-lg:text-[10px]"
     :title="vm.title"
   >
     <span class="opacity-50">│</span>
     <span v-if="vm.model" data-testid="ctx-model">{{ vm.model }}</span>
+    <!-- 窗口段连同它**前面那个**分隔符一起在手机端隐藏（`max-lg:hidden`）⇒ 不会出现光杆 `│` -->
     <template v-if="vm.limitText">
-      <span class="opacity-50">│</span>
-      <span data-testid="ctx-limit">窗口 {{ vm.limitText }}</span>
+      <span class="opacity-50 max-lg:hidden">│</span>
+      <span data-testid="ctx-limit" class="max-lg:hidden">窗口 {{ vm.limitText }}</span>
     </template>
     <template v-if="vm.limitText || vm.hasTurnInput">
       <span class="opacity-50">│</span>

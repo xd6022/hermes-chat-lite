@@ -116,8 +116,10 @@ function answer(c: ApprovalChoice): void {
     class="mx-auto w-full max-w-chat px-4 pb-1"
   >
     <!-- 状态行：一眼一行 —— 灯 + 状态词 + **模型/窗口/本轮输入合计**（2026-09-17 并成一行；原来是两行）。
-         进行中时灯本身做脉冲（"在动"是用户硬要求：静态黄灯跟"卡住了"长得一样）。 -->
-    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs" :class="tone">
+         进行中时灯本身做脉冲（"在动"是用户硬要求：静态黄灯跟"卡住了"长得一样）。
+         手机端（`max-lg`，< 1024px）整行缩一号（状态词 12→11px，水位段再小到 10px，见 ContextGauge）
+         且「窗口 1m」整段隐藏 —— 2026-09-17 用户要求，**桌面一律不动**。 -->
+    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs max-lg:text-[11px]" :class="tone">
       <span
         data-testid="turn-light"
         class="shrink-0 select-none"

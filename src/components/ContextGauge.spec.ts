@@ -96,4 +96,36 @@ describe('ContextGauge：模型 + 窗口 + 本轮输入合计', () => {
     setCtx({})
     expect(mount(ContextGauge).find('[data-testid="ctx-gauge"]').exists()).toBe(false)
   })
+  // ⚠️ 手机端（< lg）两件事靠 Tailwind 的 `max-lg:` 变体实现 —— jsdom 不跑媒体查询、
+  // 算不出真实显隐，所以这里**锁的是"class 在不在位"这个契约**（真显隐由真浏览器探针量）。
+  it('手机端契约：整行缩号 +「窗口 1m」连同其前导分隔符一起 max-lg:hidden', () => {
+    setCtx({ model: 'm', limit: 1_000_000, turnInput: 500_000 })
+    const w = mount(ContextGauge)
+
+    // 整行字号在手机端更小（10px）
+    expect(w.find('[data-testid="ctx-gauge"]').classes()).toContain('max-lg:text-[10px]')
+
+    const spans = w.findAll('[data-testid="ctx-gauge"] > span')
+    // 桌面顺序：│ 模型 │ 窗口 │ 合计  ⇒ 找到「窗口」段，它和**它前面那个** │ 都必须带 max-lg:hidden
+    const limitIdx = spans.findIndex((s) => s.text().startsWith('窗口'))
+    expect(limitIdx).toBeGreaterThan(0)
+    expect(spans[limitIdx].classes()).toContain('max-lg:hidden')
+    expect(spans[limitIdx - 1].text()).toBe('│')
+    expect(spans[limitIdx - 1].classes()).toContain('max-lg:hidden')
+
+    // 合计段的前导 │ 与合计本身**不许**隐藏（手机端仍要看到模型 + 合计）
+    const turnIdx = spans.findIndex((s) => s.text().startsWith('本轮输入合计'))
+    expect(spans[turnIdx].classes()).not.toContain('max-lg:hidden')
+    expect(spans[turnIdx - 1].text()).toBe('│')
+    expect(spans[turnIdx - 1].classes()).not.toContain('max-lg:hidden')
+  })
+
+  it('手机端隐藏「窗口」不依赖数据：limit 缺失时那段本就不渲染（两种隐藏都不留光杆 │）', () => {
+    setCtx({ model: 'm', turnInput: 500_000 }) // 没有 limit
+    const w = mount(ContextGauge)
+    const spans = w.findAll('[data-testid="ctx-gauge"] > span')
+    // │ 模型 │ 合计 —— 分隔符数量与可见段严格对应
+    expect(spans.filter((s) => s.text() === '│').length).toBe(2)
+    expect(spans.filter((s) => s.text().startsWith('窗口')).length).toBe(0)
+  })
 })

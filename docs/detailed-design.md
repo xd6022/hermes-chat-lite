@@ -45,7 +45,7 @@
 | P28 四态状态灯 + 每轮一个状态戳（v2.14，`feat/turn-status-light`） | ✅ 完成并部署（2026-09-16） | 新 `lib/turnStatus.ts`（四态判据纯函数）+ `components/TurnMark.vue`（轮首戳）+ `lib/appearance.ts`（头像默认值，Settings 可覆盖）+ `chat.ts` 新增 `retryTurn()`；`RunStatus.vue` 状态行改四态且**常驻**；`ChatWindow.vue` 挂轮首戳（`markOf`）；`App.vue` Settings 加「头像」项 | 单测 **299**（新增 25 条：`lib/turnStatus.spec` 15 + `components/TurnMark.spec` 5 + 改写的 RunStatus 组件用例）+ **RED/GREEN（还原 4 个源文件 → 9 条组件级新断言全红）** + `vite build` + 产物自检（`🔵` / `正在执行工具` / `正在使用` / `刷新/切后台` 各 **0**，四态词各就位）+ **真浏览器 5/5**（打真模型真工具）：空闲 `🟢空闲中` 常驻且全屏无 🔵、发一句 `🟡忙碌中 1.4s` 且灯在动、跑完回 `🟢空闲中`、中途暂停 `🟠已中断`（不是红）、每轮都有轮首戳且历史轮保留自身状态；`pageerror` 无。详见 §5.6。**线上复验（部署后，2026-09-16）**：容器内网直问 `chatlite`，bundle `index-Dc1NuDo2.js`，四态词各就位 / 🔵=0；真浏览器打线上 5/5（`🟢空闲中`→`🟡忙碌中 1.5s` 在动→暂停`🟠已中断`→`🟢空闲中`；轮首戳 第1轮🟠/第2轮🟢；无 pageerror）；`/nope.svg`=404。探针 `/opt/data/.verify/review_0916/verify_live_turnlight.cjs` |
 
 | P29 轮首只留头像 + 空闲词改「时刻准备着」（v2.15，`chore/avatar-only`，PR #25） | ✅ 完成并部署（2026-09-17；线上 bundle `index-D6iaOhse.js` 已含「时刻准备着」，真浏览器实测轮首为纯头像） | `TurnMark.vue` → **`TurnAvatar.vue`**（改名名实相符：只画头像，删掉灯与 `markOf()`）；`ChatWindow.vue` 去掉实时相位映射（少一个派生量）；`lib/turnStatus.ts` 的空闲词 `空闲中` → `时刻准备着` | 单测 **303**（`TurnAvatar.spec` 5 条 + `ChatWindow.spec` 新增集成断言 1 条）+ **RED/GREEN（两组各自验证：还原 `turnStatus.ts` → 3 条词相关断言红；还原 `ChatWindow.vue` + 旧 `TurnMark.vue` → 轮首灯断言红）** + `vite build` + 产物自检（`时刻准备着`≥1、`空闲中`=**0**、`turn-mark-light`=**0**、`turn-avatar`≥1、`🔵`=0）+ **真浏览器**（打真模型）：轮首是纯头像、全页无轮首灯、状态行空闲 `🟢时刻准备着` / 忙碌 `🟡忙碌中 X.Xs` 在动。**撤灯的理由**见坑 70 |
-| P30 状态行合并 + 去「上次已知」+ 构建标识搬家 + 用户消息可复制（v2.16，`chore/ui-tweaks`，PR #26） | ✅ 完成并部署（2026-09-17；线上 bundle `index-BsGVRAPl.js`：`ctx-stale`=**0**、`copy-user`=1、`上次已知`=1（只剩 tooltip）、`前端构建`=1（只剩 Settings）、`/nope.svg`=404 加固仍在） | ①`ContextGauge.vue` **并入状态行**（原来是灯一行、模型信息一行），且自带前导分隔符、无数据时整段不渲染；②去掉「· 上次已知 HH:MM」（解释只留 tooltip）；③`App.vue` 顶栏撤掉构建标识（Settings 那份保留）；④`MessageItem.vue` 用户消息下方加**常驻**「复制」按钮 | 单测 **312**（+8：ContextGauge 2 / RunStatus 2 / App 1 / MessageItem 4 —— 其中 3 条是防回归护栏断言，新旧都过）+ **RED/GREEN（stash 5 个源文件 → 7 条判别性断言全红）** + `vue-tsc` + `vite build` + 产物自检（`ctx-stale`=**0**、`copy-user`=1、`上次已知`=1（只剩 tooltip）、`前端构建`=1（只剩 Settings））+ **真浏览器 16/16**（打真模型真工具）：同一行（`top` 差 0px，`ctx-gauge` 是状态行子元素）、跑完仍是 16px 单行、**真剪贴板内容 == 原消息**、标签 1.5s 自动复位、刷新后界面无「上次已知」而 tooltip 仍有、顶栏无构建时间而 Settings 有、375px 无横向溢出；`pageerror` 无。探针 `verify_ui_tweaks.cjs` | 口径见 §5.6 第 5 条；两条新坑 71/72 |
+| P30 状态行合并 + 去「上次已知」+ 构建标识搬家 + 用户消息可复制（v2.16，`chore/ui-tweaks`，PR #26） | ✅ 完成并部署（2026-09-17；线上 bundle `index-BsGVRAPl.js`：`ctx-stale`=**0**、`copy-user`=1、`上次已知`=1（只剩 tooltip）、`前端构建`=1（只剩 Settings）、`/nope.svg`=404 加固仍在） | ①`ContextGauge.vue` **并入状态行**（原来是灯一行、模型信息一行），且自带前导分隔符、无数据时整段不渲染；②去掉「· 上次已知 HH:MM」（解释只留 tooltip）；③`App.vue` 顶栏撤掉构建标识（Settings 那份保留）；④`MessageItem.vue` 用户消息下方加**常驻**「复制」按钮 | 单测 **312**（+8：ContextGauge 2 / RunStatus 2 / App 1 / MessageItem 4 —— 其中 3 条是防回归护栏断言，新旧都过）+ **RED/GREEN（stash 5 个源文件 → 7 条判别性断言全红）** + `vue-tsc` + `vite build` + 产物自检（`ctx-stale`=**0**、`copy-user`=1、`上次已知`=1（只剩 tooltip）、`前端构建`=1（只剩 Settings））+ **真浏览器 16/16**（打真模型真工具）：同一行（`top` 差 0px，`ctx-gauge` 是状态行子元素）、跑完仍是 16px 单行、**真剪贴板内容 == 原消息**、标签 1.5s 自动复位、刷新后界面无「上次已知」而 tooltip 仍有、顶栏无构建时间而 Settings 有、375px 无横向溢出；`pageerror` 无。探针 `verify_ui_tweaks.cjs` | 口径见 §5.6 第 5 条；两条新坑 71/72。**v2.16.1 追加**：手机端整行缩号 + 去「窗口 1m」（`max-lg`，桌面不动），真浏览器 13/13（手机行高 16px 单行）|
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -578,6 +578,10 @@ export interface UiMessage {
    窄屏（375px）放不下时靠 `flex-wrap` 换行，**不横向溢出**（实测 0px）。
    ⚠️ 「· 上次已知 HH:MM」**2026-09-17 起不显示**（用户要求去掉）—— 值仍可能来自本地缓存，
    那句解释只留在 tooltip 里（悬停才看得到）。
+   **手机端两处（v2.16.1，2026-09-17；桌面一律不动）**：`< lg` 下整行缩一号（状态词 `text-xs`→`max-lg:text-[11px]`、
+   水位段 `text-[11px]`→`max-lg:text-[10px]`）+ **「窗口 1m」整段 `max-lg:hidden`**（连同它**前面那个** `│` 一起藏，
+   不留光杆分隔符）。真浏览器实测手机 390px：只剩「灯 时刻准备着 │ 模型 │ 本轮输入合计」、**行高 16px（单行）**、
+   不横向溢出；切回桌面窗口段照常可见、字号回到 11/12px —— 证明纯响应式、没漏到桌面。
 
 **轮首头像**（`TurnAvatar.vue`，2026-09-16）：每一轮开头只放一个 `{头像}`（默认 `-_-`）。
 - **这里不挂状态灯**（原来挂过，后来撤了，见坑 70）—— 状态只由上面那条状态行说。
@@ -921,6 +925,7 @@ docker compose exec -T "$SVC" sh -c 'wget -qO- http://127.0.0.1<bundle> | grep -
 | --- | --- |
 | v2.7 水位行口径 | `本轮输入合计`（旧字样 `本会话累计` / `缓存命中` 必须为 **0**） |
 | v2.16 状态行合并 | `ctx-stale` 必须为 **0**；灯与水位在**同一父元素**；用户消息有 `copy-user` |
+| v2.16.1 手机端窄化 | CSS 有 `@media not all and (min-width:1024px)` 包住的 `.max-lg\:hidden` + `.max-lg\:text-[10px]`；桌面不受影响 |
 | v2.9 相位分派 | `当前通道不支持补充信息`、`已中断这一轮` |
 | v2.10 静态资源加固 | 无前端文案 → 改用 `/nope.svg` 是否 **404** 判断（见 §8.4） |
 | v2.12 地址即状态 | `该会话不存在，请重新创建`（且 `#/s/` 字样为 1） |

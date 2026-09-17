@@ -111,7 +111,16 @@ export function runStatus({ phase, seconds, runId }: StatusInput): Status {
     // 文案是用户 2026-09-16 亲口定的："时刻准备着"（正合 `Ready` 那个正向信号的意思）。
     case 'done':
     case 'idle':
-    default:
       return make('green', '时刻准备着')
+
+    default: {
+      // **编译期绊线**：给 `RunPhase` 加新成员时，下面这行会因为"它不是 never"而编译报错 ——
+      // 逼着人来决定"这个新状态该亮什么灯"，而不是默默落进兜底分支显示成 🟢 时刻准备着。
+      // 现实教训：v0.21.3 新增终态 `interrupted` 时四个判据点同时漏，界面直接卡死在「忙碌中」
+      // （见 docs/detailed-design.md 坑 68）。这是第四个可能漏的点，所以在这里钉死。
+      const exhaustive: never = phase
+      void exhaustive
+      return make('green', '时刻准备着')
+    }
   }
 }

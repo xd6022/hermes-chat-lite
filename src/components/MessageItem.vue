@@ -35,6 +35,29 @@ const bodyRef = ref<HTMLElement | null>(null)
 const html = ref('')
 let rafId = 0
 
+/**
+ * 复制**用户消息**（2026-09-17 用户要求：发出去的消息下面能一键复回去）。
+ *
+ * 与代码块复制同一套手感：点一下把原文写进剪贴板，标签短暂变「已复制」再自动变回。
+ * ⚠️ 没有 clipboard API（http 非安全上下文 / 老浏览器）时**如实说"复制失败"**，不假装成功。
+ */
+const copyLabel = ref('复制')
+let copyTimer = 0
+
+async function copyUser(): Promise<void> {
+  try {
+    if (!navigator.clipboard) throw new Error('clipboard unavailable')
+    await navigator.clipboard.writeText(props.msg.content)
+    copyLabel.value = '已复制'
+  } catch {
+    copyLabel.value = '复制失败'
+  }
+  if (copyTimer) window.clearTimeout(copyTimer)
+  copyTimer = window.setTimeout(() => {
+    copyLabel.value = '复制'
+  }, 1500)
+}
+
 const INLINE_TAGS = new Set(['P', 'LI', 'H1', 'H2', 'H3', 'H4', 'TD', 'TH', 'BLOCKQUOTE'])
 
 function decorate() {
@@ -90,15 +113,30 @@ watch(() => [props.msg.content, props.msg.streaming, props.msg.kind] as const, s
 
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
+  if (copyTimer) window.clearTimeout(copyTimer)
 })
 </script>
 
 <template>
-  <!-- 用户消息：右侧淡灰块，保留换行 -->
-  <div v-if="msg.role === 'user'" class="flex min-w-0 justify-end">
+  <!-- 用户消息：右侧淡灰块，保留换行；气泡下面挂一个复制按钮（2026-09-17 用户要求） -->
+  <div v-if="msg.role === 'user'" class="flex min-w-0 flex-col items-end gap-0.5">
     <div
       class="min-w-0 max-w-[85%] whitespace-pre-wrap break-words rounded-2xl bg-gray-100 px-4 py-2 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
     >{{ msg.content }}</div>
+    <!--
+      复制这条用户消息。**常驻可见**（不学代码块那种 hover 才出现）——
+      手机上没有 hover，而且"我发出去的原文"本来就常要复回去。
+      点击后标签短暂变「已复制」再自动变回（与代码块的复制同一套手感）。
+    -->
+    <button
+      type="button"
+      data-testid="copy-user"
+      title="复制这条消息"
+      class="rounded px-1 text-[11px] leading-5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+      @click="copyUser()"
+    >
+      {{ copyLabel }}
+    </button>
   </div>
 
   <!-- 压缩摘要：Hermes 的上下文压缩边界，属于内部机制 —— 折叠起来，别占正文位置 -->

@@ -15,6 +15,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { respondApproval, retryTurn, store } from '../stores/chat'
 import { runStatus } from '../lib/turnStatus'
+import ContextGauge from './ContextGauge.vue'
 import type { ApprovalChoice } from '../api/types'
 
 const tick = ref(0)
@@ -114,15 +115,17 @@ function answer(c: ApprovalChoice): void {
     :data-light="status.light"
     class="mx-auto w-full max-w-chat px-4 pb-1"
   >
-    <!-- 状态行：一眼一行 —— 灯 + 状态词（+ 失败时才有的「重试」）。
+    <!-- 状态行：一眼一行 —— 灯 + 状态词 + **模型/窗口/本轮输入合计**（2026-09-17 并成一行；原来是两行）。
          进行中时灯本身做脉冲（"在动"是用户硬要求：静态黄灯跟"卡住了"长得一样）。 -->
-    <div class="flex items-center gap-2 text-xs" :class="tone">
+    <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs" :class="tone">
       <span
         data-testid="turn-light"
         class="shrink-0 select-none"
         :class="status.pulse ? 'animate-pulse' : ''"
       >{{ status.icon }}</span>
-      <span class="truncate">{{ status.text }}</span>
+      <span class="min-w-0 truncate">{{ status.text }}</span>
+      <!-- 模型 │ 窗口 │ 本轮输入合计：作为同一行的后半段（自带前导分隔符；没数据时自己整段不渲染） -->
+      <ContextGauge />
       <button
         v-if="status.retry"
         type="button"

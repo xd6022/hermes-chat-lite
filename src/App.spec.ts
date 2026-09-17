@@ -59,19 +59,31 @@ beforeEach(() => {
 })
 
 describe('App 集成', () => {
-  it('渲染顶栏（Hermes + 服务端版本 + 前端构建标识）与空态', async () => {
+  it('渲染顶栏（Hermes + 服务端版本）与空态；**顶栏不再摆前端构建标识**（2026-09-17 移到 Settings）', async () => {
     const w = mount(App)
     await flushPromises()
 
     const header = w.find('header').text()
     expect(header).toContain('Hermes')
     expect(header).toContain('v0.20.4') // 来自 /health
-    // 前端构建标识（vite define 注入）：真机上"到底是哪一版"靠它一眼确认
-    expect(header).toContain(__BUILD_SHORT__)
+    // 2026-09-17 用户要求：首屏不摆构建信息（那串 `09-17 10:33` 原来是顶栏小字）
+    expect(header).not.toContain(__BUILD_SHORT__)
+    expect(header).not.toContain('09-')
     expect(w.find('textarea').exists()).toBe(true)
     expect(w.text()).toContain('有什么可以帮您？')
-    // 空态那份构建标识已去掉（2026-09-15）；顶栏那一份仍是"看是哪一版"的入口
+    // 空态那份构建标识也已去掉（2026-09-15）；现在全页只留 Settings 那一份
     expect(w.text()).not.toContain(__BUILD_ID__)
+  })
+
+  it('构建标识是**搬家不是删掉**：Settings 面板里仍然看得到（问"到底是哪一版"还得有答案）', async () => {
+    const w = mount(App)
+    await flushPromises()
+
+    expect(w.text()).not.toContain('前端构建')
+    const settingsBtn = w.findAll('header button').find((b) => b.text() === 'Settings')
+    await settingsBtn!.trigger('click')
+    await flushPromises()
+    expect(w.text()).toContain(`前端构建 ${__BUILD_ID__}`)
   })
 
   it('空态只剩标题：副标题与构建标识都已去掉（2026-09-15）', async () => {
@@ -84,7 +96,7 @@ describe('App 集成', () => {
     // 副标题的两种文案（新会话 / 已选中但没消息）都不该再出现在屏幕正中
     expect(scroller.text()).not.toContain('从一个新会话开始')
     expect(scroller.text()).not.toContain('这个会话还没有消息')
-    // 屏幕正中不再有那份构建标识（顶栏还有一份，见上一条用例）
+    // 屏幕正中不再有那份构建标识（现在全页只剩 Settings 里那一份）
     expect(scroller.text()).not.toContain(__BUILD_ID__)
   })
 

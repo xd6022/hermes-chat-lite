@@ -17,6 +17,8 @@ import type { HermesMessage } from '../api/types'
 import type * as ChatModule from './chat'
 
 const SID = 's_resume'
+/** 第二个会话：所有"切到别的会话"的用例都切到它（见文件末尾那组跨会话用例） */
+const SID_B = 's_resume_b'
 const RUN_ID = 'run_resume_1'
 const SENT = '去跑一个长任务'
 
@@ -101,6 +103,21 @@ function stubFetch(): void {
       }
       if (url === `/api/sessions/${SID}`) {
         return json({ object: 'hermes.session', session: { id: SID, input_tokens: 10, cache_read_tokens: 5 } })
+      }
+      // 「切到别的会话」那组用例用：B 会话的空历史 + 计数全 0 + 删得掉
+      if (url.startsWith(`/api/sessions/${SID_B}/messages`)) {
+        return json({
+          object: 'list',
+          session_id: SID_B,
+          data: [],
+          pagination: { limit: 100, offset: 0, order: 'latest', returned: 0 },
+        })
+      }
+      if (url === `/api/sessions/${SID_B}`) {
+        return json({ object: 'hermes.session', session: { id: SID_B, input_tokens: 0, cache_read_tokens: 0 } })
+      }
+      if (method === 'DELETE' && (url === `/api/sessions/${SID}` || url === `/api/sessions/${SID_B}`)) {
+        return json({ object: 'hermes.session.deleted', id: url.split('/').pop(), deleted: true })
       }
       if (url === '/api/sessions' && method === 'POST') {
         return json({ object: 'hermes.session', session: { id: SID, source: 'api_server' } })
@@ -487,5 +504,110 @@ describe('网关重启把这一轮标成 interrupted（新终态）', () => {
 
     await vi.advanceTimersByTimeAsync(60_000)
     expect(calls.filter((c) => c === `GET /v1/runs/${RUN_ID}`).length).toBe(settled)
+  })
+})
+
+/**
+ * ★ 跨会话：A 会话那一轮的 run 状态不许跟到别的会话里（2026-09-18 修）。
+ *
+ * 现场（修复前会真的做错事）：A 会话那一轮进了 `background`（事件流断了、服务端还在跑，
+ * 退避轮询还排着）→ 用户切到 B。此时
+ *   ① `openSession()` 只重置了 phase/timeline，**runId 还留着 A 的**，轮询也没停；
+ *   ② 轮询到点 → `applyRunStatus()` 把 B 的相位改成 `background`、runId 写成 A 的 ⇒
+ *      `canSteer()` 变真 → 在 B 里打的字被 `POST /v1/runs/{A}/steer` **注进 A 的那一轮**，
+ *      B 里的「暂停」也会去停 A 的任务，而 B 的状态行还一直显示"忙碌中"（带着 A 的计时）。
+ *
+ * 修复后：① 三处切换点（切会话 / 回欢迎页 / 删掉当前会话）都走 `clearTurnState()`；
+ *         ② 轮询自己带会话守卫（不是当前会话就不动手，只停轮询，**记录留着**）。
+ * 两个不变量必须同时成立：**B 里干净**、**回 A 时还能接上**（所以记录刻意不清）。
+ */
+describe('★ 跨会话：切到 B 之后，A 那一轮的 run 状态不许跟过来', () => {
+  it('切走当刻就收干净：相位 idle、runId 清空、补充按钮不存在', async () => {
+    vi.useFakeTimers()
+    const mod = await freshRuns()
+    statusQueue = [{ run_id: RUN_ID, status: 'running' }]
+    await mod.send(SENT) // A：断流 → background（记录已落盘、轮询已排上）
+    expect(mod.store.run.phase).toBe('background')
+    expect(mod.store.run.runId).toBe(RUN_ID)
+
+    await mod.openSession(SID_B)
+
+    expect(mod.store.currentId).toBe(SID_B)
+    expect(mod.store.run.phase).toBe('idle') // 不是 background：B 里没有在跑的一轮
+    expect(mod.store.run.runId).toBeNull() // ★ steer / stop 认的那个 run_id 不许跨会话
+    expect(mod.canSteer()).toBe(false) // ★ 在 B 里「发送」＝ 新的一轮，不会注进 A
+    expect(mod.store.run.startedAt).toBe(0) // 计时也不许带着 A 的起点
+    expect(storedRecord()).not.toBeNull() // 记录留着：回到 A 还要靠它接上
+  })
+
+  it('★ 已经排下的退避轮询不会再问 A 的 run、也不会改 B 的相位', async () => {
+    vi.useFakeTimers()
+    const mod = await freshRuns()
+    statusQueue = Array.from({ length: 10 }, () => ({ run_id: RUN_ID, status: 'running' }))
+    await mod.send(SENT)
+    expect(mod.store.run.phase).toBe('background')
+
+    await mod.openSession(SID_B)
+    const asked = (): number => calls.filter((c) => c === `GET /v1/runs/${RUN_ID}`).length
+    const before = asked()
+
+    await vi.advanceTimersByTimeAsync(60_000) // 1s/2s/4s/… 的退避序列全放过
+
+    expect(asked()).toBe(before) // 一次都没再问
+    expect(mod.store.run.phase).toBe('idle') // B 的相位没被动过
+    expect(mod.store.run.runId).toBeNull()
+  })
+
+  it('守卫之外仍然接得上：回到 A 会话 → 记录还在，照常同步并收尾', async () => {
+    const mod = await freshRuns()
+    statusQueue = [{ run_id: RUN_ID, status: 'running' }]
+    await mod.send(SENT)
+    await mod.openSession(SID_B) // 先去 B 待一会儿
+
+    statusQueue = [{ run_id: RUN_ID, status: 'completed' }]
+    transcript = serverTurn('回到 A 同步到的正文')
+    await mod.openSession(SID) // 回 A（openSession 结尾会 resumeSync）
+    await vi.waitFor(() => expect(mod.store.run.phase).toBe('done'))
+
+    expect(mod.store.messages.at(-1)?.content).toBe('回到 A 同步到的正文')
+    expect(storedRecord()).toBeNull() // 到终态了才清记录（原行为不变）
+  })
+
+  it('回欢迎页（新对话）走同一套清理：runId 清空、轮询停掉、记录留着', async () => {
+    vi.useFakeTimers()
+    const mod = await freshRuns()
+    statusQueue = Array.from({ length: 10 }, () => ({ run_id: RUN_ID, status: 'running' }))
+    await mod.send(SENT)
+
+    mod.goHome()
+
+    expect(mod.store.currentId).toBeNull()
+    expect(mod.store.run.phase).toBe('idle')
+    expect(mod.store.run.runId).toBeNull()
+    expect(mod.canSteer()).toBe(false)
+    const asked = (): number => calls.filter((c) => c === `GET /v1/runs/${RUN_ID}`).length
+    const before = asked()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(asked()).toBe(before)
+    expect(storedRecord()).not.toBeNull()
+  })
+
+  it('删掉当前会话（它正有一轮在后台跑）也走同一套清理', async () => {
+    vi.useFakeTimers()
+    const mod = await freshRuns()
+    statusQueue = Array.from({ length: 10 }, () => ({ run_id: RUN_ID, status: 'running' }))
+    await mod.send(SENT)
+    expect(mod.store.run.phase).toBe('background')
+
+    await mod.removeSession(SID, 0) // 延迟设 0：测试不等真实 2 秒的空壳复查
+
+    expect(mod.store.currentId).toBeNull()
+    expect(mod.store.run.phase).toBe('idle')
+    expect(mod.store.run.runId).toBeNull()
+    expect(mod.canSteer()).toBe(false)
+    const asked = (): number => calls.filter((c) => c === `GET /v1/runs/${RUN_ID}`).length
+    const before = asked()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(asked()).toBe(before)
   })
 })

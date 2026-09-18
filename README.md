@@ -12,6 +12,7 @@
 
 | 文档 | 内容 |
 | --- | --- |
+| [`项目说明/README.md`](项目说明/README.md) | **项目分析文档集（评审入口）**：整体架构 / 模块职责 / 发消息完整调用链 / 关键技术选择 / 设计缺陷与风险 / Agent 开发学习笔记 |
 | [`docs/feasibility-analysis.md`](docs/feasibility-analysis.md) | 可行性分析：结论、实测依据、风险（暴露面）、工作量 |
 | [`docs/detailed-design.md`](docs/detailed-design.md) | 详细设计：**接手先读 §0 状态看板 + §0.1 跨会话续接**，含 API 契约、SSE 事件表、组件设计、部署、坑清单（42 条）、验证证据（§10.1 / §10.2） |
 | [`docs/plans/2026-09-12-runs-transport.md`](docs/plans/2026-09-12-runs-transport.md) | A 方案（`/v1/runs` 通道）计划书 + 状态看板 + 实测证据流水 |

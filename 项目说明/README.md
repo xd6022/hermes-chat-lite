@@ -13,7 +13,7 @@
 | 仓库 | `xd6022/hermes-chat-lite`（GitHub） |
 | 分析基线 | commit `7995d26`（v2.16.1） |
 | 核对时点 | 2026-09-18 |
-| 代码规模 | `src/` 约 **10.7k 行**（其中 `stores/chat.ts` 单文件 1899 行）；28 个单测文件 / **314 条用例全绿** |
+| 代码规模 | `src/` 约 **10.7k 行**（其中 `stores/chat.ts` 单文件 1899 行）；28 个单测文件 / **319 条用例全绿** |
 | 技术栈 | Vue 3 + TypeScript + Vite 6 + Tailwind 3，markdown-it + highlight.js；无 Pinia、无 vue-router、无 UI 库 |
 | 部署 | 宿主机 Docker → 容器 `chatlite`（nginx） → Caddy 反代 `chat.1597133.xyz`（带 basic_auth） |
 | 上游 | Hermes API Server（容器 `hermes:8642`）+ dashboard 后端（`hermes:9119`，只取上下文窗口上限） |

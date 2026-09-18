@@ -559,6 +559,35 @@ export async function loadSessions(): Promise<void> {
  */
 export type OpenSessionResult = { ok: true } | { ok: false; missing: boolean }
 
+/**
+ * 把**属于"一轮"**的状态清干净（`phase` 由调用方决定 —— 切会话/回欢迎页是 `idle`，
+ * 不是 `thinking`，所以这里刻意**不**调 `resetRun()`）。
+ *
+ * 为什么必须有这一步（2026-09-18 修「跨会话 run 状态串台」）：
+ * 这一组状态是**跟着那一轮**的，不是跟着会话的，而它们以前会活到下一个会话里。最坏的一条路径是：
+ *   A 会话那一轮进了 `background`（事件流断了、服务端还在跑，退避轮询还排着）→ 用户切到 B →
+ *   仍在跑的轮询把 `store.run.runId` 写成 A 的 run_id，并把 **B 的相位改成 `background`** ⇒
+ *   在 B 里打的字会被当成"补充"**注进 A 的那一轮**（steer 认的就是 run_id），B 里的「暂停」
+ *   也会去停 A 的任务；而 B 的状态行还一直显示"忙碌中"（带着 A 的计时）。
+ *
+ * 三处切换点（切会话 / 回欢迎页 / 删掉当前会话）都要调它 —— 少一处就是"看起来一样但漏了一项"。
+ * 记录（`hcl.activeRun`）**刻意不清**：回到那条会话时 `resumeSync()` 还要靠它把那一轮接上。
+ */
+function clearTurnState(): void {
+  stopWatching()
+  store.run.runId = null
+  store.run.startedAt = 0
+  store.run.endedAt = 0
+  store.run.currentTool = null
+  store.run.toolPreview = null
+  store.run.timeline = []
+  store.run.errorMessage = null
+  store.run.blocked = null
+  store.run.approval = null
+  store.run.recovered = false
+  store.run.syncing = false
+}
+
 export async function openSession(
   id: string,
   opts: { resumeAfter?: boolean } = {},
@@ -570,8 +599,9 @@ export async function openSession(
   store.messages = []
   clearBootError()
   store.messagesLoading = true
+  // 上一轮的东西一律不许跟到新会话里（含仍在跑的退避轮询，见 clearTurnState 的说明）
+  clearTurnState()
   store.run.phase = 'idle'
-  store.run.timeline = []
   // 分页状态必须跟着会话重置，否则会把上一个会话的 offset 用到新会话上
   store.rawCount = 0
   store.hasMoreHistory = false
@@ -629,10 +659,9 @@ export function goHome(): void {
   store.rawCount = 0
   store.hasMoreHistory = false
   store.messagesLoading = false
-  resetRun()
+  // 与 openSession / removeSession 用同一套清理（少一处就是"看起来一样但漏了一项"）
+  clearTurnState()
   store.run.phase = 'idle'
-  store.run.startedAt = 0
-  store.run.endedAt = 0
   resetContextUse()
   clearBootError()
 }
@@ -739,8 +768,9 @@ export async function removeSession(id: string, ghostSweepDelayMs = 2000): Promi
       loadedIds = new Set()
       store.rawCount = 0
       store.hasMoreHistory = false
+      // 删掉当前会话 = 离开它，同上：属于这一轮的状态（含仍在跑的轮询）一并收掉
+      clearTurnState()
       store.run.phase = 'idle'
-      store.run.timeline = []
     }
     void sweepGhost(id, ghostSweepDelayMs)
     return null
@@ -1322,6 +1352,20 @@ async function recoverTurn(sid: string, sentText: string): Promise<boolean> {
  * 幂等：可以反复调用。
  */
 async function applyRunStatus(rec: ActiveRunRecord): Promise<boolean> {
+  /*
+   * ★ 会话守卫（2026-09-18 修「跨会话 run 状态串台」）：
+   * 这一轮的 run 状态**只属于它自己所在的会话**。这里以前没有这个检查，于是最坏的一条路径是 ——
+   *   A 会话那一轮进了 background（流断了、服务端还在跑，退避轮询排着）→ 用户切到 B →
+   *   仍在跑的轮询把 B 的相位改成 background 并把 runId 写成 A 的 ⇒
+   *   在 B 里打的字会被 steer **注进 A 的那一轮**，B 里的「暂停」也会去停 A 的任务。
+   * 现在：不是当前会话就**停掉这一轮询**，但**记录留着** —— 回到那条会话时 resumeSync()
+   * 会重新接上（能力没丢）。返回 true = "这一批不用再盯了"，对调用方与"已到终态"同义。
+   */
+  if (rec.sessionId !== store.currentId) {
+    stopWatching()
+    return true
+  }
+
   store.run.syncing = true
   let st: RunStatusResponse | null = null
   let gone = false

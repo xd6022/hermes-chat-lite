@@ -23,6 +23,44 @@ services:
       retries: 3
       start_period: 5s
 
+  # ---------- 消息中心服务（inbox）----------
+  # 职责：只读消息表 + 标记已读/归档（不写业务消息、不删除）。
+  # 消息由推送方直连 MySQL 写入：股票脚本走 scripts/notify.py，邮件走 sync_inbox_email.py。
+  # ⚠️ 令牌沿用 .env 里已有的 HERMES_API_SERVER_KEY（nginx 注入成 X-Inbox-Token）
+  #    ⇒ 不必新增口令变量，前端产物里也依旧没有任何密钥。
+  # ⚠️ MYSQL_PASSWORD 不写默认值：避免把库口令提交进仓库；在 .env 里加一行 INBOX_MYSQL_PASSWORD。
+  inbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.inbox
+    image: hermes-chat-lite-inbox:latest
+    container_name: chatlite-inbox
+    restart: unless-stopped
+    environment:
+      - INBOX_TOKEN=${HERMES_API_SERVER_KEY:?请在同目录 .env 里设置 HERMES_API_SERVER_KEY}
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=hermes
+      - MYSQL_PASSWORD=${INBOX_MYSQL_PASSWORD:?请在同目录 .env 里设置 INBOX_MYSQL_PASSWORD}
+      - MYSQL_DATABASE=hermes_stock
+      - INBOX_TABLE=inbox_messages
+    expose:
+      - "8080"
+    networks:
+      - net_openclaw
+    healthcheck:
+      # ★ 用 /health（它会真去连库并 SELECT 表）：库不通、表没建 → unhealthy，
+      #   而不是"服务进程活着就算健康"那种假阳性。
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import urllib.request,sys;
+          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).status==200 else 1)"
+      interval: 60s
+      timeout: 8s
+      retries: 3
+      start_period: 10s
+
 networks:
   # 与 hermes 容器共用（外部已存在），端口不暴露宿主机
   net_openclaw:

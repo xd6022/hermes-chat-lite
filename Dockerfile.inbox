@@ -1,0 +1,22 @@
+# 消息中心（inbox）服务镜像 —— 与前端镜像分开：前端是静态站，这个是常驻小服务。
+# 职责：只读消息表 + 标记已读/归档；不写业务数据、不删除。
+# 构建上下文 = 仓库根目录（见 docker-compose.yml 的 build.context / dockerfile）。
+FROM python:3.12-slim
+
+# 国内网络：走清华 PyPI 源（可用 --build-arg PIP_INDEX_URL=... 覆盖）
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
+WORKDIR /app
+
+COPY inbox/requirements.txt ./
+RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r requirements.txt
+
+COPY inbox/main.py ./
+
+# 运行时注入（compose 传进来）；不写默认值，避免误以为有值
+ENV INBOX_TOKEN=""
+
+EXPOSE 8080
+
+# 单 worker 足够：这是自用低频服务；--log-level warning 免得每次轮询刷一行日志
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "warning"]

@@ -11,8 +11,8 @@
 | P1 数据层 | ✅ 完成（正式表已核验） | 正式表 `inbox_messages` 已建并通过结构与索引核对（§12） | 见 §12 验证记录 |
 | P2 inbox 服务 | ✅ 完成 | `inbox/main.py` + `Dockerfile.inbox` + compose 的 `inbox` service + nginx `/inbox/` | 22 项接口断言全绿（§12） |
 | P3 投递腿 | ✅ 完成 | `inbox/notify.py`（CLI + `push()` 函数入口）、`inbox/sync_inbox_email.py` + cron `3d862de00356`、`alert_588170.py` 接入 | 见 §12.3 / §12.4 |
-| P4 前端 | ⬜ 未开始 | 图标 + 未读徽标 + 消息抽屉 + 等级灯 + Settings「消息」设置组 | vitest（新断言 RED/GREEN）+ 真浏览器探针 |
-| P5 部署 | ⬜ 未开始 | 分支 push + 用户 `docker compose up -d --build` | 容器内网直问确认线上版本（不用口令） |
+| P4 前端 | ✅ 完成 | 图标 + 未读徽标 + 消息抽屉 + 等级灯 + Settings「消息」设置组 | 366 项单测（新增 46，含 RED 核验）+ 真浏览器 18/18（§12.6） |
+| P5 部署 | ⬜ 未开始 | 分支 push（已推）+ 用户 `docker compose up -d --build` | 容器内网直问确认线上版本（不用口令） |
 
 ## §1 目标与范围
 
@@ -175,9 +175,10 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
 | 列表项 | 灯 + 标题 + 类型标签 + 时间；正文只给 2 行摘要（早盘简报这类几千字的必须截断） |
 | 详情 | 复用现有 markdown 渲染（含修好的 `table-wrapper`）；长内容在抽屉内滚动 |
 | 动作 | `标记已读` / `归档` / **`就这条问 agent`**（把正文当上下文起一轮 `/v1/runs`，走现有发送链路）/ `全部已读` / `立即刷新` |
-| 筛选 | 全部 / 股票信号 / 邮件 / 提醒（按 `category`） |
-| 地址 | 抽屉打开时地址带 `#/inbox`（刷新/返回键不丢，保持"地址即状态" D3） |
-| 新消息 | 复用现有 `Notice` 轻提示（~5s 自消、点击即消） |
+| 筛选 | 全部 / 股票信号 / 邮件 / 提醒 / 系统（按 `category`，5 项） |
+| 地址 | ⚠️ **抽屉不进地址**（与 Settings 一致）：它是覆盖层，不是"当前在哪"。写 `#/inbox` 会把会话 id 从地址里挤掉 ⇒ 刷新变成"欢迎页 + 抽屉开着"，比现在更差。要进地址得改成 `#/s/<id>/inbox` 这种带后缀的形态（要动 v2.12 那套路由），首期不做 |
+| 新消息 | 复用现有 `Notice` 轻提示（~5s 自消、点击即消）：轮询发现未读变多 → 「消息中心有 N 条新消息」 |
+| PC 优先 | 抽屉 PC `480px`、手机全屏；用户明确"先别管手机，先把 PC 搞定" |
 
 ## §7 轮询策略（前端可控）
 
@@ -300,3 +301,33 @@ grep -q '^INBOX_MYSQL_PASSWORD=' .env || printf 'INBOX_MYSQL_PASSWORD=hermes@106
 `external_id=588170:dipA:20260922`；再跑一次不新增行（当天去重）。
 `push()` 的日志走 stderr ⇒ **调用方的 stdout 保持干净**（那条 stdout 是 cron 的投递内容）。
 测试留档：`/opt/data/.verify/test_588170_notify.py`。
+
+### §12.6 前端真浏览器验证（2026-09-22，18/18 全绿）
+
+探针 `/opt/data/.verify/probe_inbox_drawer.cjs`：本地 dist + 自建反代（`/api`→真 Hermes 8642 注入 Bearer、
+`/inbox`→本地 inbox 服务注入 `X-Inbox-Token`）+ **真 MySQL**，打真内核：
+
+| 验的什么 | 结果 |
+| --- | --- |
+| 徽标数字 = **库里的未读数**（不是前端自己算的） | ✅ 界面 11 / 库 11 |
+| 点图标 → 抽屉打开、真消息渲染出来 | ✅ 11 条，探针消息按时间倒序在第一 |
+| 等级灯 | ✅ `action` → `bg-red-500`；元信息 `股票信号 · 今天 20:02 · 要动手` |
+| **列表是摘要、展开才是全文** | ✅ 摘要里没有正文尾部标记 `TAIL_MARK`，展开后有 |
+| **表格被关在 `table-wrapper` 里**（v2.1 那个坑不在新界面重演） | ✅ wrapper `overflow-x:auto`；页面 `scrollWidth 1280 = clientWidth`（不横滑） |
+| PC 抽屉宽度 | ✅ 480px |
+| 标记已读 | ✅ 库里 `read_at` 落库、未读 11→10、**界面徽标跟着变** |
+| 归档 | ✅ 库里 `archived_at` 落库、条目从列表消失 |
+| 筛选「邮件」 | ✅ 10 条全部是邮件类（全部=10 → 邮件=10） |
+| `关闭` 档 | ✅ 头部「自动刷新已关闭」、`localStorage.hcl.inboxPoll = off` |
+| `pageerror` | ✅ 无 |
+
+（探针自己插的那条测试消息跑完自动归档 —— 只归档不删除。）
+
+### §12.7 单测与 RED 核验
+
+- 全量 **365 项通过**（上次基线 319，本次新增 **46** 条：`lib/inboxPoll.spec` 8 + `lib/inboxMeta.spec` 8 +
+  `stores/inbox.spec` 13 + `components/InboxBell.spec` 4 + `components/InboxDrawer.spec` 13），
+  `vue-tsc` 0 错，`vite build` 通过（`index-CgP3yewC.js`）。
+- **RED 核验**（`/opt/data/.verify/redcheck_inbox.sh`）：把 **7 处实现**故意改坏（默认档 5m→1m、退避不再放大、
+  info 灯改绿、昨天→前天、轮询每次都拉列表、开抽屉不看档位、灯色写死灰）⇒ **10 条断言变红**，验完自动还原。
+  ⚠️ 没用 `git stash push -- src/`：新文件（未跟踪）会被一起收走 ⇒ 假绿（技能里记过这个坑）。

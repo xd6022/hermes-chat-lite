@@ -46,6 +46,7 @@
 
 | P29 轮首只留头像 + 空闲词改「时刻准备着」（v2.15，`chore/avatar-only`，PR #25） | ✅ 完成并部署（2026-09-17；线上 bundle `index-D6iaOhse.js` 已含「时刻准备着」，真浏览器实测轮首为纯头像） | `TurnMark.vue` → **`TurnAvatar.vue`**（改名名实相符：只画头像，删掉灯与 `markOf()`）；`ChatWindow.vue` 去掉实时相位映射（少一个派生量）；`lib/turnStatus.ts` 的空闲词 `空闲中` → `时刻准备着` | 单测 **303**（`TurnAvatar.spec` 5 条 + `ChatWindow.spec` 新增集成断言 1 条）+ **RED/GREEN（两组各自验证：还原 `turnStatus.ts` → 3 条词相关断言红；还原 `ChatWindow.vue` + 旧 `TurnMark.vue` → 轮首灯断言红）** + `vite build` + 产物自检（`时刻准备着`≥1、`空闲中`=**0**、`turn-mark-light`=**0**、`turn-avatar`≥1、`🔵`=0）+ **真浏览器**（打真模型）：轮首是纯头像、全页无轮首灯、状态行空闲 `🟢时刻准备着` / 忙碌 `🟡忙碌中 X.Xs` 在动。**撤灯的理由**见坑 70 |
 | P30 状态行合并 + 去「上次已知」+ 构建标识搬家 + 用户消息可复制（v2.16，`chore/ui-tweaks`，PR #26） | ✅ 完成并部署（2026-09-17；线上 bundle `index-BsGVRAPl.js`：`ctx-stale`=**0**、`copy-user`=1、`上次已知`=1（只剩 tooltip）、`前端构建`=1（只剩 Settings）、`/nope.svg`=404 加固仍在） | ①`ContextGauge.vue` **并入状态行**（原来是灯一行、模型信息一行），且自带前导分隔符、无数据时整段不渲染；②去掉「· 上次已知 HH:MM」（解释只留 tooltip）；③`App.vue` 顶栏撤掉构建标识（Settings 那份保留）；④`MessageItem.vue` 用户消息下方加**常驻**「复制」按钮 | 单测 **312**（+8：ContextGauge 2 / RunStatus 2 / App 1 / MessageItem 4 —— 其中 3 条是防回归护栏断言，新旧都过）+ **RED/GREEN（stash 5 个源文件 → 7 条判别性断言全红）** + `vue-tsc` + `vite build` + 产物自检（`ctx-stale`=**0**、`copy-user`=1、`上次已知`=1（只剩 tooltip）、`前端构建`=1（只剩 Settings））+ **真浏览器 16/16**（打真模型真工具）：同一行（`top` 差 0px，`ctx-gauge` 是状态行子元素）、跑完仍是 16px 单行、**真剪贴板内容 == 原消息**、标签 1.5s 自动复位、刷新后界面无「上次已知」而 tooltip 仍有、顶栏无构建时间而 Settings 有、375px 无横向溢出；`pageerror` 无。探针 `verify_ui_tweaks.cjs` | 口径见 §5.6 第 5 条；两条新坑 71/72。**v2.16.1 追加**：手机端整行缩号 + 去「窗口 1m」（`max-lg`，桌面不动），真浏览器 13/13（手机行高 16px 单行）|
+| P31 消息中心（v3.0，`feat/inbox-message-center`） | 🟡 代码完成（P0–P4 全绿），**待用户构建部署** | 新增 `inbox/`（服务：`main.py` + Dockerfile + compose 的 `inbox` service + nginx `/inbox/` 反代，只读消息表 + 标记已读/归档）、投递腿（`inbox/notify.py` CLI/函数入口 + `inbox/sync_inbox_email.py` 邮件同步 + cron `3d862de00356`）、前端（`lib/inboxPoll.ts`/`lib/inboxMeta.ts`/`lib/inboxSettings.ts` + `api/inbox.ts` + `stores/inbox.ts` + `InboxBell.vue`/`InboxDrawer.vue` + App 接线 + Settings「消息」组）；数据表 `hermes_stock.inbox_messages` | 单测 **365**（新增 46，含 RED 核验：改坏 7 处实现 → 10 条断言变红）+ 服务端 **22 项接口断言** + **真浏览器 18/18**（打真服务真 MySQL：徽标数字 = 库内未读数、抽屉渲染真消息、摘要截断/展开全文、表格带 table-wrapper 且页面不横滚、已读/归档**读回库核对**、筛选、关闭档提示与 localStorage）；计划书与全部验证记录见 `docs/plans/2026-09-22-inbox-message-center.md` |
 
 图例：⬜ 未开始 / 🟡 进行中 / ✅ 完成 / ❌ 阻塞
 
@@ -1351,3 +1352,30 @@ v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openS
    修法是**统一行高**（改 `leading-4`）让顶边真的对齐，而不是把断言放宽到 4px 了事。
    同一条思路的另一面：`__BUILD_ID__` 是「短 sha · 时间」而 `__BUILD_SHORT__` 只有时间 —— 断言写死日期格式也会假失败。
    **假失败先怀疑断言、真差异先修代码**，分界线就是"去查清那个数字是怎么来的"。
+
+73. **★ 中文不要进查询串（消息中心的 `category` 存 ASCII 代码）**（2026-09-22 实测） → 用 `?category=股票信号`
+   这种原样带中文的 URL 打 `inbox` 服务，uvicorn 直接判 `Invalid HTTP request received`、**返回空响应**
+   （浏览器里看着像"筛不出东西"或"接口坏了"，不是 400 也不是 500，排查时特别费劲）。
+   定法：**库里存代码**（`stock`/`email`/`alert`/`system`），**中文标签只在界面映射** —— 顺带换来"改文案不用动数据"。
+   服务端还留了一道：给中文 category 直接 **400 明确报错**，不静默返回空列表。
+   （正文/标题里的中文没问题，那是 JSON body，正常 UTF-8。）
+
+74. **★ 同一个提醒同时走"两条投递腿"会出现两条 —— 两腿的去重键不可能互相看见**（2026-09-22） →
+   消息中心有两条腿：**邮件同步腿**（键 = 邮件 `Message-ID`）与**脚本直推腿**（键 = `{事件}:{交易日}`）。
+   给一个"本来就发邮件"的提醒脚本再加一行直推，结果是**同一条提醒在消息区出现两次**（谁也去不了谁的键）。
+   定法：**能进邮箱的提醒一律只靠邮件腿，零改动覆盖**；直推只留给**没有外发通道**的（本项目里只有 588170 急跌提醒 ——
+   它只 `print`，cron `deliver=local`，除了翻 cron 输出谁也收不到）。
+   可复用判据：接新数据源之前先**把每一条现有通道查清**（这个脚本到底发不发信？cron 的 deliver 是什么？），
+   别按"deliver 字段 = local 就以为没外发"（有脚本自己发信，写着 local 照样进邮箱）。
+
+75. **★ 旁枝不能污染主干：推送日志走 stderr、遮罩会拦住顶栏点击**（2026-09-22，两处各咬一次） →
+   ① `notify.py` 成功日志默认写 stdout，而它被"脚本直推"调用时，**脚本的 stdout 正是 cron 的投递内容**
+   ⇒ 提示语混进告警正文。做法：函数入口 `push()` 一律 `--quiet`（日志转 stderr），CLI 用才打 stdout。
+   ② 自动化探针里点顶栏图标超时，原因是 **Settings 抽屉的 `fixed inset-0` 遮罩盖住了整屏**（元素在、但不可点）。
+   做法：先关掉正在开的抽屉再点顶栏；真机上也一样 —— 两层抽屉同时开时，顶层遮罩本来就该拦住下层。
+76. **★ compose 里 healthcheck 的引号：YAML 折叠标量不处理反斜杠转义（消息中心，2026-09-22）** →
+   写成 `python -c \"…\"` 时，**YAML 不会把 `\"` 解成引号**，shell 拿到的是字面量 `\"`
+   ⇒ 那条 healthcheck 到底判什么，只在脑子里推演很容易错（而它一旦错就是"永远绿"的假阳性）。
+   做法：**外层单引号、内层双引号** + **用 pyyaml 解析出真实字符串**再拿真服务/死端口各跑一遍
+   （校验脚本 `/opt/data/.verify/check_inbox_healthcheck.sh`：真服务退出码 0、死端口 1）。
+   可复用：凡是"把命令写成字符串塞进配置"的地方，验证方式是**取出真实字符串去执行**，不是读一遍觉得对。

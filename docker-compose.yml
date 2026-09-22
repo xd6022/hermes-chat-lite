@@ -51,11 +51,13 @@ services:
     healthcheck:
       # ★ 用 /health（它会真去连库并 SELECT 表）：库不通、表没建 → unhealthy，
       #   而不是"服务进程活着就算健康"那种假阳性。
+      # ⚠️ 引号必须这么写：YAML 的折叠标量**不处理反斜杠转义**，写成 python -c \"…\" 的话
+      #    shell 收到的是字面量 \"，Python 会把整段当成**字符串字面量**直接求值成功 ⇒
+      #    healthcheck 永远绿（假阳性的假阳性）。所以外层单引号、内层双引号。
       test:
         - CMD-SHELL
         - >-
-          python -c "import urllib.request,sys;
-          sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).status==200 else 1)"
+          python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=3).status == 200 else 1)'
       interval: 60s
       timeout: 8s
       retries: 3

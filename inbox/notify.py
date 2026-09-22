@@ -68,23 +68,63 @@ def build_external_id(event: str, dedupe: str, now: datetime) -> str:
 
 
 def read_body(args: argparse.Namespace) -> str:
+    # 注意：`--body` 的默认值是 **None**（不是空串）——用来区分"显式给了空正文"与"没给"，
+    # 否则函数式入口 push() 传空正文时会掉进读 stdin 的分支，把调用方卡住。
+    if args.body is not None:
+        return args.body
     if args.body_file:
         try:
             with open(args.body_file, encoding="utf-8") as fh:
                 return fh.read()
         except OSError as exc:
-            _warn(f"读不到 --body-file（{exc}），改用 --body/stdin")
-    if args.body:
-        return args.body
+            _warn(f"读不到 --body-file（{exc}），改用 stdin/空正文")
     if not sys.stdin.isatty():
         return sys.stdin.read()
     return ""
 
 
+def push(
+    title: str,
+    body: str = "",
+    level: str = "info",
+    category: str = "alert",
+    event: str = "",
+    source: str = "cron",
+    dedupe: str = "day",
+    occurred_at: str = "",
+    dry_run: bool = False,
+) -> bool:
+    """给 python 脚本用的函数式入口：成功 True，失败 False，**永不抛异常**。
+
+    典型用法（交易脚本里就这三行，包在 try 里是为了连 import 都不炸）：
+
+        try:
+            sys.path.insert(0, "/opt/data/scripts")
+            from notify import push
+            push(title="588170 急跌 -3.3%", body=text, level="action",
+                 category="stock", event="588170:dipA")
+        except Exception:
+            pass
+    """
+    argv = ["--title", title, "--body", body, "--level", level, "--category", category,
+            "--source", source, "--dedupe", dedupe, "--quiet"]
+    if event:
+        argv += ["--event", event]
+    if occurred_at:
+        argv += ["--occurred-at", occurred_at]
+    if dry_run:
+        argv += ["--dry-run"]
+    try:
+        return main(argv) == 0
+    except Exception as exc:  # noqa: BLE001 —— 同上：绝不连累调用方
+        _warn(f"push() 异常（已忽略）: {type(exc).__name__}: {exc}")
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="往消息中心推一条消息（失败静默）")
     ap.add_argument("--title", required=True)
-    ap.add_argument("--body", default="")
+    ap.add_argument("--body", default=None, help="正文；不给则读 stdin（给空串也算给了）")
     ap.add_argument("--body-file", default="")
     ap.add_argument("--level", default="info")
     ap.add_argument("--category", default="alert")
@@ -93,6 +133,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dedupe", choices=("day", "hour", "none"), default="day")
     ap.add_argument("--occurred-at", default="", help="'YYYY-MM-DD HH:MM:SS'，默认现在（Asia/Shanghai）")
     ap.add_argument("--dry-run", action="store_true", help="只打印将写入的内容，不写库")
+    ap.add_argument("--quiet", action="store_true", help="连成功日志也不打（给 push() 用，保持调用方 stdout 干净）")
     ap.add_argument("--strict", action="store_true", help="出错时返回非 0（默认恒为 0）")
     args = ap.parse_args(argv)
 
@@ -148,7 +189,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             conn.close()
         print(f"[notify] {'已推送' if inserted else '已存在（去重命中，未新增）'}: "
-              f"{level}/{category} {title} (external_id={external_id})")
+              f"{level}/{category} {title} (external_id={external_id})",
+              file=sys.stderr if args.quiet else sys.stdout)
         return 0
     except Exception as exc:  # noqa: BLE001 —— 通知失败绝不连累调用方
         _warn(f"推送失败（已忽略，不影响主流程）: {type(exc).__name__}: {exc}")

@@ -21,6 +21,7 @@ import re
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Iterator, List, Optional
+from zoneinfo import ZoneInfo
 
 import pymysql
 from fastapi import Body, FastAPI, Header, HTTPException, Query
@@ -51,6 +52,11 @@ if not re.fullmatch(r"[A-Za-z0-9_]+", TABLE or ""):
     raise RuntimeError(f"INBOX_TABLE 非法: {TABLE!r}")
 
 LEVELS = ("action", "warn", "info")
+
+# `since`（起始时间）：前端传带偏移的 ISO（如 `2026-09-22T00:00:00+08:00`），
+# 统一换算成 **Asia/Shanghai 的 naive 时间**再与 `occurred_at` 比较（库里存的就是这个口径）。
+# 不传 / 传空 = 不限（"看全部"）。
+BJ = ZoneInfo("Asia/Shanghai")
 
 # category 一律用 ASCII 代码（stock/email/alert/system），中文标签由前端映射：
 # 中文字面量放进**查询串**会踩编码坑（实测：原样带中文的 `?category=股票信号` 变成空响应/400），
@@ -89,6 +95,26 @@ def _check_category(category: Optional[str]) -> Optional[str]:
     return category
 
 
+def _parse_since(raw: Optional[str]) -> Optional[datetime]:
+    """`since` → **Asia/Shanghai 的 naive datetime**（库里 `occurred_at` 就是这个口径）。
+
+    - 空 / 不传 = 不限（None）
+    - 带偏移的 ISO（前端传的 `2026-09-22T00:00:00+08:00`）会先换算到北京时间
+    - 不带偏移的（`2026-09-22 18:00:00`）按北京时间理解
+    - 解析不了 → **400 明确报错**（不静默当成"不限"，那会让人以为筛选没生效）
+    """
+    if raw is None or raw.strip() == "":
+        return None
+    text = raw.strip().replace(" ", "T")
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="since 必须是 ISO 时间（如 2026-09-22T00:00:00+08:00）")
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(BJ).replace(tzinfo=None)
+    return dt
+
+
 def _iso(value: Any) -> Optional[str]:
     """naive DATETIME（Asia/Shanghai）→ 带 +08:00 的 ISO 串。"""
     if value is None:
@@ -118,12 +144,16 @@ def _row_out(row: Dict[str, Any], *, with_body: bool) -> Dict[str, Any]:
     return out
 
 
-def _unread_count(conn: pymysql.connections.Connection) -> int:
+def _unread_count(conn: pymysql.connections.Connection, since: Optional[datetime] = None) -> int:
+    """未读数。带 `since` 时只数**该时间之后**的（与列表同口径 ⇒ 徽标数字永远等于列表里未读的条数）。"""
+    where = ["read_at IS NULL", "archived_at IS NULL"]
+    params: List[Any] = []
+    if since is not None:
+        where.append("occurred_at >= %s")
+        params.append(since)
     with conn.cursor() as cur:
-        cur.execute(
-            f"SELECT COUNT(*) AS n FROM `{TABLE}` WHERE read_at IS NULL AND archived_at IS NULL"
-        )
-        row = cur.fetchone() or {}
+        cur.execute(f"SELECT COUNT(*) AS n FROM `{TABLE}` WHERE " + " AND ".join(where), params)
+        row: Any = cur.fetchone() or {}
     return int(row.get("n") or 0)
 
 
@@ -143,10 +173,14 @@ def health() -> JSONResponse:
 
 
 @app.get("/inbox/unread-count")
-def get_unread_count(x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token")):
+def get_unread_count(
+    since: Optional[str] = Query(default=None, description="只看这个时间之后的（ISO，带偏移最稳）"),
+    x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),
+):
     _check_token(x_inbox_token)
+    since_dt = _parse_since(since)
     with _conn() as conn:
-        return {"unread_count": _unread_count(conn)}
+        return {"unread_count": _unread_count(conn, since_dt)}
 
 
 @app.get("/inbox/messages")
@@ -156,11 +190,13 @@ def list_messages(
     include_archived: int = Query(default=0, ge=0, le=1),
     limit: int = Query(default=50, ge=1, le=200),
     before_id: Optional[int] = Query(default=None, ge=1),
+    since: Optional[str] = Query(default=None, description="只看 occurred_at ≥ 这个时间的（ISO）"),
     x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),
 ) -> Dict[str, Any]:
     """列表（按 id 倒序）。只返回摘要；正文走 `/inbox/messages/{id}`。"""
     _check_token(x_inbox_token)
     category = _check_category(category)
+    since_dt = _parse_since(since)
 
     where: List[str] = []
     params: List[Any] = []
@@ -174,6 +210,9 @@ def list_messages(
     if before_id:
         where.append("id < %s")
         params.append(before_id)
+    if since_dt is not None:
+        where.append("occurred_at >= %s")
+        params.append(since_dt)
     clause = ("WHERE " + " AND ".join(where)) if where else ""
 
     sql = (
@@ -187,7 +226,8 @@ def list_messages(
             cur.execute(sql, params + [limit])
             rows = cur.fetchall() or []
         return {
-            "unread_count": _unread_count(conn),
+            "unread_count": _unread_count(conn, since_dt),
+            "since": since_dt.strftime("%Y-%m-%d %H:%M:%S") if since_dt else None,
             "messages": [_row_out(r, with_body=False) for r in rows],
         }
 

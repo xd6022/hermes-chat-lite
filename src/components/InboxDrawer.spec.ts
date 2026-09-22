@@ -40,6 +40,7 @@ function stubFetch(): void {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.includes('/read-all')) return json({ ok: true, updated: 2, unread_count: 0 })
       if (url.includes('/archive')) return json({ ok: true, unread_count: 0 })
       if (url.startsWith('/inbox/messages/'))
         return json({
@@ -47,7 +48,7 @@ function stubFetch(): void {
           body: '行情表格：\n\n| 项 | 值 |\n| --- | --- |\n| 现价 | 1.013 |\n| 建议 | 减仓1700股 |\n',
         })
       if (url.startsWith('/inbox/messages?')) return json({ unread_count: 1, messages: [msg()] })
-      if (url === '/inbox/unread-count') return json({ unread_count: 1 })
+      if (url.startsWith('/inbox/unread-count')) return json({ unread_count: 1 })
       throw new Error(`未预期的请求: ${url}`)
     }),
   )
@@ -156,13 +157,22 @@ describe('InboxDrawer：动作', () => {
     expect(w.findAll('[data-testid="inbox-item"]').length).toBe(0)
   })
 
-  it('「标记已读」把状态交给服务端（请求 /read）', async () => {
+  it('★ 展开即已读（v3.1）：展开后自动打 /read，按钮随之变成「标为未读」', async () => {
     const { w } = await fresh()
     await w.find('[data-testid="inbox-item"] button').trigger('click')
     await flushPromises()
-    await w.find('[data-testid="inbox-mark-read"]').trigger('click')
-    await flushPromises()
     expect(calls.some((c) => c.includes('/read?'))).toBe(true)
+    expect(w.find('[data-testid="inbox-mark-read"]').exists()).toBe(false)
+    expect(w.find('[data-testid="inbox-mark-unread"]').exists()).toBe(true)
+  })
+
+  it('手动「标为未读」也能用（把消息留成待办）', async () => {
+    const { storeMod, w } = await fresh()
+    await w.find('[data-testid="inbox-item"] button').trigger('click')
+    await flushPromises()
+    await w.find('[data-testid="inbox-mark-unread"]').trigger('click')
+    await flushPromises()
+    expect(storeMod.inbox.messages[0].read).toBe(false)
   })
 
   it('筛选按钮：点「股票信号」带的 category 是 ASCII 代码 stock', async () => {
@@ -177,6 +187,93 @@ describe('InboxDrawer：动作', () => {
     const { w } = await fresh()
     await w.find('[data-testid="inbox-close"]').trigger('click')
     expect(w.emitted('close')).toBeTruthy()
+  })
+})
+
+describe('InboxDrawer：一键已读（2026-09-22 用户反馈"看了但外面还显示未读"后挪到头部）', () => {
+  it('★ 按钮在**头部**（列表之前）、带未读数', async () => {
+    const { w } = await fresh([msg({ id: 1 }), msg({ id: 2 })])
+    const btn = w.find('[data-testid="inbox-read-all"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toContain('一键已读')
+    expect(btn.text()).toContain('(2)')
+
+    // 位置判据（比看 class 稳）：按钮出现在列表项之前的文档顺序里 ⇒ 它在头部，不在页脚
+    const firstItem = w.find('[data-testid="inbox-item"]').element
+    const pos = btn.element.compareDocumentPosition(firstItem)
+    expect(Boolean(pos & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+  })
+
+  it('★ 点了就清零：请求不带筛选、未读归零、头部改文案', async () => {
+    const { storeMod, w } = await fresh([msg({ id: 1 }), msg({ id: 2 })])
+    storeMod.inbox.filter = 'stock' // 故意先筛一个类型
+    await w.find('[data-testid="inbox-read-all"]').trigger('click')
+    await flushPromises()
+
+    const call = calls.find((c) => c.includes('/read-all'))
+    expect(call).toBeTruthy()
+    expect(call).not.toContain('category') // ← 带了筛选就只清一部分，徽标停在非 0
+    expect(storeMod.inbox.unread).toBe(0)
+    expect(w.text()).toContain('全部已读')
+    // 徽标数字应从外部消失（未读 0 不渲染徽标）
+    expect(w.find('[data-testid="inbox-read-all"]').text()).not.toContain('(')
+  })
+
+  it('没有未读时按钮禁用（不给出点了没反应的按钮）', async () => {
+    const { w } = await fresh([msg({ read: true })])
+    const btn = w.find('[data-testid="inbox-read-all"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+    expect(btn.text()).not.toContain('(')
+  })
+})
+
+describe('InboxDrawer：起始时间窗（v3.1）', () => {
+  it('默认值 = 当天 0 点，旁边有「今天 00:00 起」人话', async () => {
+    const { w } = await fresh()
+    const input = w.find('[data-testid="inbox-since"]')
+    expect(input.exists()).toBe(true)
+    expect(input.attributes('value')).toMatch(/T00:00$/)
+    expect(w.find('[data-testid="inbox-since-label"]').text()).toBe('今天 00:00 起')
+  })
+
+  it('★ 点「不限」→ 请求不再带 since，标签变「不限」', async () => {
+    const { w } = await fresh()
+    await w.find('[data-testid="inbox-since-all"]').trigger('click')
+    await flushPromises()
+    const list = calls.filter((c) => c.startsWith('GET /inbox/messages?')).pop()
+    expect(list).not.toContain('since=')
+    expect(w.find('[data-testid="inbox-since-label"]').text()).toBe('不限')
+  })
+
+  it('★ 改时间 → 请求带上新时间（改完立刻生效）', async () => {
+    const { w } = await fresh()
+    const input = w.find('[data-testid="inbox-since"]')
+    await input.setValue('2026-09-22T18:00')
+    await input.trigger('change')
+    await flushPromises()
+    const list = calls.filter((c) => c.startsWith('GET /inbox/messages?')).pop()
+    expect(decodeURIComponent(list!)).toContain('2026-09-22T18:00:00')
+    expect(w.find('[data-testid="inbox-since-label"]').text()).toBe('今天 18:00 起')
+  })
+
+  it('点了「今天 0 点」回到默认', async () => {
+    const { storeMod, w } = await fresh()
+    await storeMod.setSinceInput('2026-09-22T18:00')
+    await w.vm.$nextTick()
+    await w.find('[data-testid="inbox-since-today"]').trigger('click')
+    await flushPromises()
+    expect(storeMod.inbox.sinceInput).toMatch(/T00:00$/)
+    expect(w.find('[data-testid="inbox-since-label"]').text()).toBe('今天 00:00 起')
+  })
+
+  it('时间窗把消息挡没了时，空态要说清原因（不是一句"没有消息"）', async () => {
+    const { storeMod, w } = await fresh([])
+    storeMod.inbox.sinceInput = '2026-09-22T18:00'
+    await w.vm.$nextTick()
+    expect(w.find('[data-testid="inbox-empty"]').text()).toContain('这个时间之后没有消息')
+    storeMod.inbox.sinceInput = ''
+    await w.vm.$nextTick()
+    expect(w.find('[data-testid="inbox-empty"]').text()).toBe('没有消息') // 不限 = 不是"窄窗口"
   })
 })
 

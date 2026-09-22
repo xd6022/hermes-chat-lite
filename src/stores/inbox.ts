@@ -25,10 +25,18 @@ import {
 import { isForeground, watchForeground } from '../lib/page-lifecycle'
 import { isPolling, nextDelayMs } from '../lib/inboxPoll'
 import { pollSetting } from '../lib/inboxSettings'
+import { defaultSinceInput, toApiSince } from '../lib/inboxSince'
 
 export const inbox = reactive({
   /** 当前筛选（`all` = 全部） */
   filter: 'all',
+  /**
+   * 起始时间（界面上那个 `datetime-local` 的值，本地墙钟）。
+   *
+   * 默认 = **当天 00:00**；**只在内存里**（刷新页面即还原默认）—— 用户 2026-09-22 明确
+   * "不用保存，刷新还原"。空串 = 不限。
+   */
+  sinceInput: defaultSinceInput(),
   messages: [] as InboxMessage[],
   unread: 0,
   /** 首次加载完成（用于区分"空态"与"还没加载"） */
@@ -51,9 +59,19 @@ export const inbox = reactive({
 let timer: ReturnType<typeof setTimeout> | null = null
 let unwatch: (() => void) | null = null
 
+/**
+ * 本会话里被用户**手动标为未读**的消息 id。
+ *
+ * 用途：加了"展开即已读"（2026-09-22 用户要求）之后，若用户刚把某条标成未读当备忘，
+ * 再展开一下又会被自动吃掉 ⇒ 这里记着，**不再自动已读**（显式动作优先于自动行为）。
+ * 只活在内存里：刷新即清空。
+ */
+const unreadExempt = new Set<number>()
+
 /** 测试/切档位用：清空状态 */
 export function resetInbox(): void {
   inbox.filter = 'all'
+  inbox.sinceInput = defaultSinceInput()
   inbox.messages = []
   inbox.unread = 0
   inbox.loaded = false
@@ -65,6 +83,28 @@ export function resetInbox(): void {
   inbox.expandedId = null
   inbox.detail = null
   inbox.detailLoading = false
+  unreadExempt.clear()
+}
+
+/** 当前起始时间对应的 API 参数（`null` = 不限） */
+function apiSince(): string | null {
+  return toApiSince(inbox.sinceInput)
+}
+
+/**
+ * 改起始时间：**立刻重拉**（否则改了没反应，看着像坏了）。
+ * 值只留在内存里 —— 刷新页面就回到"当天 0 点"（用户要的就是这个，别顺手写 localStorage）。
+ */
+export async function setSinceInput(value: string): Promise<void> {
+  inbox.sinceInput = value ?? ''
+  inbox.expandedId = null
+  inbox.detail = null
+  await loadInbox()
+}
+
+/** 复位成"当天 0 点"（默认值） */
+export async function resetSince(): Promise<void> {
+  await setSinceInput(defaultSinceInput())
 }
 
 function onFail(e: unknown): void {
@@ -83,7 +123,7 @@ export async function loadInbox(): Promise<void> {
   if (inbox.loading) return
   inbox.loading = true
   try {
-    const res = await listMessages({ category: inbox.filter })
+    const res = await listMessages({ category: inbox.filter, since: apiSince() })
     inbox.messages = res.messages
     inbox.unread = res.unread_count
     inbox.loaded = true
@@ -101,7 +141,7 @@ export async function loadInbox(): Promise<void> {
  */
 export async function pollInbox(): Promise<void> {
   try {
-    const res = await getUnreadCount()
+    const res = await getUnreadCount(apiSince())
     if (res.unread_count > inbox.unread) {
       const diff = res.unread_count - inbox.unread
       await loadInbox()
@@ -149,7 +189,11 @@ export async function toggleDetail(id: number): Promise<void> {
   inbox.detail = null
   inbox.detailLoading = true
   try {
-    inbox.detail = await getMessage(id)
+    const detail = await getMessage(id)
+    inbox.detail = detail
+    // ★ 展开即已读（2026-09-22 用户要求）：真去看了就算处理过。
+    //   例外：本会话里被**手动标为未读**的不动（显式动作优先，别把"待办标记"吃掉）。
+    if (!detail.read && !unreadExempt.has(id)) void setRead(id, true)
   } catch (e) {
     onFail(e)
     inbox.expandedId = null
@@ -160,6 +204,9 @@ export async function toggleDetail(id: number): Promise<void> {
 
 /** 标记已读（`read=false` 可撤回） */
 export async function setRead(id: number, read = true): Promise<void> {
+  // 手动标未读 ⇒ 记进"豁免名单"，之后展开也不会被自动已读吃掉
+  if (read) unreadExempt.delete(id)
+  else unreadExempt.add(id)
   try {
     const res = await markRead(id, read)
     inbox.unread = res.unread_count
@@ -171,10 +218,15 @@ export async function setRead(id: number, read = true): Promise<void> {
   }
 }
 
-/** 全部已读（按当前筛选；`all` = 全部） */
+/** 全部已读。
+ *
+ * ⚠️ **不带筛选**（口径 2026-09-22 用户反馈后定）：这个按钮的标签就是"全部"，
+ * 若按当前筛选只清一部分，徽标会停在非 0（比如筛「邮件」时点它，剩股票类未读），
+ * 用户看到的现象就是"点了没用"。要按类型清就走接口的 category 参数，界面不再暴露。
+ */
 export async function readAll(): Promise<void> {
   try {
-    const res = await markAllRead(inbox.filter)
+    const res = await markAllRead()
     inbox.unread = res.unread_count
     for (const m of inbox.messages) m.read = true
     if (inbox.detail) inbox.detail.read = true

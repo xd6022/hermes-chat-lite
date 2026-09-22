@@ -19,7 +19,18 @@ import { renderMarkdown } from '../lib/markdown'
 import { CATEGORY_FILTERS, categoryLabel, formatClock, formatWhen, levelMeta } from '../lib/inboxMeta'
 import { pollSetting } from '../lib/inboxSettings'
 import { isPolling, pollMs } from '../lib/inboxPoll'
-import { archive, inbox, refreshNow, readAll, setFilter, setRead, toggleDetail } from '../stores/inbox'
+import { isDefaultSince, sinceLabel } from '../lib/inboxSince'
+import {
+  archive,
+  inbox,
+  readAll,
+  refreshNow,
+  resetSince,
+  setFilter,
+  setRead,
+  setSinceInput,
+  toggleDetail,
+} from '../stores/inbox'
 import type { InboxMessage } from '../api/inbox'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'ask', msg: InboxMessage): void }>()
@@ -27,6 +38,21 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'ask', msg: InboxMessage): vo
 const refreshing = ref(false)
 
 const renderedBody = computed(() => (inbox.detail ? renderMarkdown(inbox.detail.body || '') : ''))
+
+/** 起始时间的人话（今天 00:00 起 / 不限 …） */
+const sinceText = computed(() => sinceLabel(inbox.sinceInput))
+/** 现在是不是"默认（当天 0 点）" —— 「今天 0 点」按钮的高亮用它 */
+const isDefaultWindow = computed(() => isDefaultSince(inbox.sinceInput))
+/**
+ * 是不是"收窄了的时间窗"（有值、且不是当天 0 点）。
+ *
+ * 空窗（不限）不算收窄 —— 否则会把"没有消息"错说成"这个时间之后没有消息"。
+ */
+const narrowWindow = computed(() => Boolean(inbox.sinceInput) && !isDefaultSince(inbox.sinceInput))
+
+function onSinceChange(e: Event): void {
+  void setSinceInput((e.target as HTMLInputElement).value)
+}
 
 const footerClock = computed(() => {
   if (inbox.error) return '上次拉取失败'
@@ -53,14 +79,30 @@ async function doRefresh(): Promise<void> {
     <div
       class="absolute right-0 top-0 flex h-full w-full flex-col border-l border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-900 sm:w-[480px]"
     >
-      <!-- 头部：标题 + 未读 + 刷新 + 关闭 -->
+      <!-- 头部：标题 + 未读 + 一键已读 + 刷新 + 关闭 -->
       <div class="flex items-center gap-2 border-b border-gray-200 px-4 py-3 dark:border-gray-800">
         <span class="text-sm font-semibold">消息</span>
         <span v-if="inbox.unread > 0" data-testid="inbox-drawer-unread" class="text-xs text-red-500">
           {{ inbox.unread }} 条未读
         </span>
         <span v-else class="text-xs text-gray-400 dark:text-gray-500">全部已读</span>
-        <span class="ml-auto text-[10px] text-gray-400 dark:text-gray-500" data-testid="inbox-poll-hint">{{ pollHint }}</span>
+        <!-- ★ 一键已读放在头部（原来在最底部右下角一行小灰字 ⇒ 用户找不到就等于没有，2026-09-22 反馈）
+             语义是**全部**：不带当前筛选（只清一部分会让徽标停在非 0，看着像"点了没用"） -->
+        <button
+          type="button"
+          data-testid="inbox-read-all"
+          class="rounded border border-gray-200 px-2 py-0.5 text-xs text-gray-600 transition hover:bg-gray-100 disabled:opacity-40 disabled:hover:bg-transparent dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+          :disabled="inbox.unread === 0"
+          :title="inbox.unread > 0 ? `把全部 ${inbox.unread} 条标为已读` : '已经没有未读了'"
+          @click="readAll()"
+        >
+          一键已读{{ inbox.unread > 0 ? ` (${inbox.unread})` : '' }}
+        </button>
+        <span
+          class="ml-auto hidden text-[10px] text-gray-400 dark:text-gray-500 sm:inline"
+          data-testid="inbox-poll-hint"
+          >{{ pollHint }}</span
+        >
         <button
           type="button"
           data-testid="inbox-refresh"
@@ -102,6 +144,42 @@ async function doRefresh(): Promise<void> {
         </button>
       </div>
 
+      <!-- 起始时间（v3.1）：默认当天 0 点；可以改；**刷新页面就还原**（只在内存里，不保存） -->
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-gray-200 px-4 py-2 text-xs dark:border-gray-800">
+        <span class="text-gray-400 dark:text-gray-500">只看</span>
+        <input
+          type="datetime-local"
+          data-testid="inbox-since"
+          class="rounded border border-gray-300 bg-transparent px-1.5 py-0.5 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
+          :value="inbox.sinceInput"
+          @change="onSinceChange"
+        />
+        <span data-testid="inbox-since-label" class="text-gray-500 dark:text-gray-400">{{ sinceText }}</span>
+        <button
+          type="button"
+          data-testid="inbox-since-today"
+          class="ml-auto rounded px-1.5 py-0.5 transition"
+          :class="
+            isDefaultWindow
+              ? 'text-gray-400 dark:text-gray-500'
+              : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'
+          "
+          title="回到默认：当天 00:00"
+          @click="resetSince()"
+        >
+          今天 0 点
+        </button>
+        <button
+          type="button"
+          data-testid="inbox-since-all"
+          class="rounded px-1.5 py-0.5 text-gray-500 transition hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+          title="不限时间（看全部历史）"
+          @click="setSinceInput('')"
+        >
+          不限
+        </button>
+      </div>
+
       <!-- 失败提示：一行小字，不弹红字横幅 -->
       <div v-if="inbox.error" data-testid="inbox-error" class="px-4 py-1 text-xs text-amber-600 dark:text-amber-400">
         上次拉取失败：{{ inbox.error }}
@@ -110,8 +188,16 @@ async function doRefresh(): Promise<void> {
       <!-- 列表 -->
       <div class="min-h-0 flex-1 overflow-y-auto">
         <p v-if="!inbox.loaded && inbox.loading" class="p-6 text-center text-sm text-gray-400">正在加载…</p>
-        <p v-else-if="inbox.loaded && !inbox.messages.length" data-testid="inbox-empty" class="p-8 text-center text-sm text-gray-400">
-          没有消息
+        <p
+          v-else-if="inbox.loaded && !inbox.messages.length"
+          data-testid="inbox-empty"
+          class="p-8 text-center text-sm text-gray-400"
+        >
+          <template v-if="narrowWindow">
+            这个时间之后没有消息<br />
+            <span class="text-xs">（把上面时间往前调，或点「不限」）</span>
+          </template>
+          <template v-else>没有消息</template>
         </p>
         <ul v-else>
           <li
@@ -192,12 +278,9 @@ async function doRefresh(): Promise<void> {
         </ul>
       </div>
 
-      <!-- 页脚 -->
+      <!-- 页脚：只留「上次更新」（一键已读已挪到头部，不做重复功能） -->
       <div class="flex items-center justify-between border-t border-gray-200 px-4 py-2 text-xs text-gray-400 dark:border-gray-800">
         <span data-testid="inbox-footer-clock">{{ footerClock }}</span>
-        <button type="button" data-testid="inbox-read-all" class="hover:text-gray-600 dark:hover:text-gray-200" @click="readAll()">
-          全部已读
-        </button>
       </div>
     </div>
   </div>

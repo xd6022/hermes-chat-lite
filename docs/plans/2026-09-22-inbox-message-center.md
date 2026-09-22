@@ -10,7 +10,7 @@
 | P0 计划书 | ✅ 完成 | 本文件 | 用户 review |
 | P1 数据层 | ✅ 完成（正式表已核验） | 正式表 `inbox_messages` 已建并通过结构与索引核对（§12） | 见 §12 验证记录 |
 | P2 inbox 服务 | ✅ 完成 | `inbox/main.py` + `Dockerfile.inbox` + compose 的 `inbox` service + nginx `/inbox/` | 22 项接口断言全绿（§12） |
-| P3 投递腿 | ⬜ 未开始 | `scripts/notify.py` 助手 + 白名单脚本改写 + `sync_inbox_email.py` + cron | 跑一次脚本，按 DB 读回验证消息行 |
+| P3 投递腿 | 🟡 进行中 | ✅ `notify.py`（12 项自检全绿，见 §12.3）；⬜ 白名单脚本改调用点；⬜ `sync_inbox_email.py` + cron | 跑一次脚本，按 DB 读回验证消息行 |
 | P4 前端 | ⬜ 未开始 | 图标 + 未读徽标 + 消息抽屉 + 等级灯 + Settings「消息」设置组 | vitest（新断言 RED/GREEN）+ 真浏览器探针 |
 | P5 部署 | ⬜ 未开始 | 分支 push + 用户 `docker compose up -d --build` | 容器内网直问确认线上版本（不用口令） |
 
@@ -103,11 +103,27 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
 
 ## §5 投递腿
 
-### 5.1 通知助手 `notify.py`（股票白名单用）
+### 5.1 通知助手 `inbox/notify.py`（股票白名单用）
 
-- 用法：`python3 /opt/data/scripts/notify.py --title "510210 移动止盈触发" --body "..." --level action --category 股票信号 --event "trailing_stop"`
-- **必须静默容错**：整体 try/except + 2 秒超时 + 失败只记日志，**绝不因为通知服务挂了让交易脚本报错**（这是硬要求）。
-- 脚本内调用点包在 `|| true` 风格的兜底里。
+- **运行时位置**：`/opt/data/scripts/notify.py` → **符号链接**到仓库里的 `inbox/notify.py`（仓库里版本化、可 review）。
+- CLI：
+
+  | 参数 | 说明 |
+  | --- | --- |
+  | `--title` | 必填（超 255 字自动截断加 …） |
+  | `--body` / `--body-file` / stdin | 正文，三选一（省略则读 stdin） |
+  | `--level` | `action` / `warn` / `info`（默认 `info`）；不认识的值降级 `info` 并 warn |
+  | `--category` | `stock` / `email` / `alert`（默认） / `system` |
+  | `--event` | 进 `external_id` 的事件名（默认取 title） |
+  | `--dedupe` | `day`（默认：同一交易日只留一条）/ `hour` / `none` |
+  | `--source` | 默认 `cron` |
+  | `--occurred-at` | `'YYYY-MM-DD HH:MM:SS'`，默认现在（Asia/Shanghai） |
+  | `--dry-run` / `--strict` | 只打印不写库 / 出错返回非 0（默认**恒为 0**） |
+
+- **静默容错是硬要求**：调用它的是止盈、止损这类交易脚本，通知/DB 出问题**绝不能**让它们报错。
+  脚本里的推荐写法：`python3 /opt/data/scripts/notify.py ... >/dev/null 2>&1 || true`
+- **去重不靠"少推"**：`INSERT ... ON DUPLICATE KEY UPDATE id=id` ⇒ 哪怕脚本每 2 分钟触发一次也不会刷屏。
+- **时间显式取 Asia/Shanghai**（`ZoneInfo`），不依赖容器 TZ。
 
 **首期白名单（改脚本，每个脚本一行调用点）**：
 
@@ -234,3 +250,13 @@ grep -q '^INBOX_MYSQL_PASSWORD=' .env || printf 'INBOX_MYSQL_PASSWORD=hermes@106
 
 `date` → **CST（Asia/Shanghai）**，`date -u` 才是 UTC ⇒ 容器 TZ 是**北京时间**（此前记的"本机是 UTC"是错的）。
 结论不变：脚本写 `occurred_at` 仍**显式**用 `ZoneInfo("Asia/Shanghai")`，不依赖容器 TZ。
+
+### §12.3 `notify.py` 自检（2026-09-22，12 项全绿）
+
+脚本 `/opt/data/.verify/test_notify.sh`。验的点：dry-run 不写库；真推一条后**换独立连接**读回
+`level/category/occurred_at`；同事件再推一次**不新增行**（去重命中）；`--dedupe hour/none` 的键形态
+（`e1:20260922T19` / `e1:20260922T194226`）；**连不上库时退出码仍为 0**（`--strict` 才给 1）；
+不认识的 `level` 降级 `info`；stdin 正文可用。
+
+自检留下的 4 条消息（1 条链路冒烟 + 3 条 notify 自检）**已全部归档**，
+`inbox_messages` 当前 **未读 = 0**（前端首屏是干净的空态）。

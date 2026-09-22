@@ -18,6 +18,8 @@ const json = (body: unknown, status = 200) =>
 let mode: 'ok' | 'fail' = 'ok'
 let calls: string[] = []
 let unread = 3
+/** 桩里模拟服务端的已读状态（/read 会改它，详情接口读它）——真实服务就是这样 */
+let readIds = new Set<number>()
 
 const M1 = {
   id: 11,
@@ -40,12 +42,19 @@ function stubFetch(): void {
       calls.push(`${init?.method ?? 'GET'} ${url}`)
       if (mode === 'fail') throw new TypeError('Failed to fetch')
       if (url.includes('/read-all')) return json({ ok: true, updated: 2, unread_count: 0 })
-      if (url.startsWith('/inbox/messages/') && url.includes('/read')) return json({ ok: true, unread_count: 2 })
+      if (url.startsWith('/inbox/messages/') && url.includes('/read')) {
+        const id = Number(/\/inbox\/messages\/(\d+)\//.exec(url)?.[1] ?? 0)
+        if (url.includes('read=0')) readIds.delete(id)
+        else readIds.add(id)
+        return json({ ok: true, unread_count: readIds.size ? 2 : 3 })
+      }
       if (url.startsWith('/inbox/messages/') && url.includes('/archive')) return json({ ok: true, unread_count: 2 })
       if (url.startsWith('/inbox/messages/') && url.includes('/read-all')) return json({ ok: true, updated: 1, unread_count: 0 })
-      if (url === '/inbox/unread-count') return json({ unread_count: unread })
+      // ★ 前缀匹配：v3.1 起这个 URL 会带 ?since=…，写死等号会让桩漏掉它
+      if (url.startsWith('/inbox/unread-count')) return json({ unread_count: unread })
       if (url.startsWith('/inbox/messages/')) {
-        return json({ ...M1, body: '全文正文（含表格）' })
+        const id = Number(/\/inbox\/messages\/(\d+)$/.exec(url)?.[1] ?? M1.id)
+        return json({ ...M1, id, read: readIds.has(id), body: '全文正文（含表格）' })
       }
       if (url.startsWith('/inbox/messages?')) return json({ unread_count: unread, messages: [M1] })
       throw new Error(`未预期的请求: ${url}`)
@@ -62,6 +71,7 @@ beforeEach(() => {
   mode = 'ok'
   calls = []
   unread = 3
+  readIds = new Set<number>()
   localStorage.clear()
   stubFetch()
 })
@@ -118,7 +128,7 @@ describe('消息中心 store：轮询', () => {
     unread = 4 // 服务端多了一条
     calls = []
     await s.pollInbox()
-    expect(calls).toContain('GET /inbox/unread-count')
+    expect(calls.some((c) => c.startsWith('GET /inbox/unread-count'))).toBe(true)
     expect(calls.some((c) => c.startsWith('GET /inbox/messages?'))).toBe(true)
     expect(s.inbox.newCount).toBe(1)
   })
@@ -128,7 +138,9 @@ describe('消息中心 store：轮询', () => {
     await s.loadInbox()
     calls = []
     await s.pollInbox()
-    expect(calls).toEqual(['GET /inbox/unread-count'])
+    // 只有一次请求，且是那个轻接口（URL 带 since —— 口径 v3.1 起时间窗也参与）
+    expect(calls.length).toBe(1)
+    expect(calls[0].startsWith('GET /inbox/unread-count')).toBe(true)
     expect(s.inbox.newCount).toBe(0)
   })
 
@@ -183,6 +195,86 @@ describe('消息中心 store：动作', () => {
   })
 })
 
+describe('消息中心 store：起始时间窗（v3.1）', () => {
+  it('默认 = 当天 00:00，且列表请求带 since（带本地偏移）', async () => {
+    const s = await fresh()
+    expect(s.inbox.sinceInput).toMatch(/^\d{4}-\d{2}-\d{2}T00:00$/)
+    calls = []
+    await s.loadInbox()
+    const list = calls.find((c) => c.startsWith('GET /inbox/messages?'))
+    expect(list).toBeTruthy()
+    expect(list).toContain('since=')
+    expect(decodeURIComponent(list!)).toContain(`${s.inbox.sinceInput.slice(0, 10)}T00:00:00`)
+  })
+
+  it('★ 手改时间 → 立刻重拉，参数跟着变（改完没反应会像坏了）', async () => {
+    const s = await fresh()
+    calls = []
+    await s.setSinceInput('2026-09-22T18:00')
+    const list = calls.find((c) => c.startsWith('GET /inbox/messages?'))
+    expect(list).toBeTruthy()
+    expect(decodeURIComponent(list!)).toContain('2026-09-22T18:00:00')
+  })
+
+  it('★ 「不限」= 请求不带 since（空值不等于"从 1970 年起"）', async () => {
+    const s = await fresh()
+    await s.setSinceInput('')
+    calls = []
+    await s.loadInbox()
+    const list = calls.find((c) => c.startsWith('GET /inbox/messages?'))
+    expect(list).not.toContain('since=')
+  })
+
+  it('轮询（徽标）也带同一个时间窗 —— 徽标数字与列表必须同口径', async () => {
+    const s = await fresh()
+    calls = []
+    await s.pollInbox()
+    const poll = calls.find((c) => c.startsWith('GET /inbox/unread-count'))
+    expect(poll).toBeTruthy()
+    expect(poll).toContain('since=')
+  })
+
+  it('★ 「刷新页面即还原」：resetInbox 之后回到当天 0 点（值只在内存里）', async () => {
+    const s = await fresh()
+    await s.setSinceInput('2026-09-22T18:00')
+    expect(s.inbox.sinceInput).toBe('2026-09-22T18:00')
+    s.resetInbox()
+    expect(s.inbox.sinceInput).toMatch(/T00:00$/)
+    // 也确实没写进 localStorage（写盘就把"刷新还原"变成 bug 了）
+    expect(localStorage.getItem('hcl.inboxSince')).toBe(null)
+  })
+})
+
+describe('消息中心 store：展开即已读（v3.1）', () => {
+  it('★ 展开未读消息 → 自动标记已读', async () => {
+    const s = await fresh()
+    await s.loadInbox() // 先有列表，才能断言列表项上的 read 也被同步
+    calls = []
+    await s.toggleDetail(11)
+    await new Promise((r) => setTimeout(r, 0)) // 自动已读是 fire-and-forget：等一拍再断言
+    expect(calls.some((c) => c.includes('/read?'))).toBe(true)
+    expect(s.inbox.messages[0].read).toBe(true)
+  })
+
+  it('已读的再展开不会重复打请求', async () => {
+    const s = await fresh()
+    await s.loadInbox()
+    await s.setRead(11, true)
+    calls = []
+    await s.toggleDetail(11)
+    expect(calls.some((c) => c.includes('/read?'))).toBe(false)
+  })
+
+  it('★ 手动标未读的，再展开也不许被自动吃掉（显式动作优先）', async () => {
+    const s = await fresh()
+    await s.loadInbox()
+    await s.setRead(11, false) // 用户手动标成"待办"
+    calls = []
+    await s.toggleDetail(11)
+    expect(calls.some((c) => c.includes('/read?'))).toBe(false)
+  })
+})
+
 describe('消息中心 store：「关闭」档与开抽屉', () => {
   it('★ 非关闭档：开抽屉会拉一次', async () => {
     const s = await fresh()
@@ -218,7 +310,7 @@ describe('消息中心 store：定时器', () => {
       s.startPolling()
       calls = []
       await vi.advanceTimersByTimeAsync(5 * 60_000 + 10)
-      expect(calls.some((c) => c === 'GET /inbox/unread-count')).toBe(true)
+      expect(calls.some((c) => c.startsWith('GET /inbox/unread-count'))).toBe(true)
 
       s.stopPolling()
       calls = []

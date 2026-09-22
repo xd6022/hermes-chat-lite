@@ -74,6 +74,8 @@ export interface ListOptions {
   includeArchived?: boolean
   limit?: number
   beforeId?: number
+  /** 起始时间（带本地偏移的 ISO，如 `2026-09-22T00:00:00+08:00`）；不传 = 不限 */
+  since?: string | null
 }
 
 export function listMessages(opts: ListOptions = {}): Promise<InboxListResponse> {
@@ -81,6 +83,8 @@ export function listMessages(opts: ListOptions = {}): Promise<InboxListResponse>
   if (opts.category && opts.category !== 'all') q.set('category', opts.category)
   if (opts.unreadOnly) q.set('unread', '1')
   if (opts.includeArchived) q.set('include_archived', '1')
+  // ⚠️ since 必须走 URLSearchParams：里面的 `+` 手工拼进查询串会被解析成空格 ⇒ 服务端 400
+  if (opts.since) q.set('since', opts.since)
   q.set('limit', String(opts.limit ?? 50))
   if (opts.beforeId) q.set('before_id', String(opts.beforeId))
   return call<InboxListResponse>(`/inbox/messages?${q.toString()}`)
@@ -90,8 +94,11 @@ export function getMessage(id: number): Promise<InboxMessageDetail> {
   return call<InboxMessageDetail>(`/inbox/messages/${id}`)
 }
 
-export function getUnreadCount(): Promise<{ unread_count: number }> {
-  return call<{ unread_count: number }>('/inbox/unread-count')
+export function getUnreadCount(since?: string | null): Promise<{ unread_count: number }> {
+  const q = new URLSearchParams()
+  if (since) q.set('since', since)
+  const qs = q.toString()
+  return call<{ unread_count: number }>(`/inbox/unread-count${qs ? `?${qs}` : ''}`)
 }
 
 export function markRead(id: number, read = true): Promise<{ ok: boolean; unread_count: number }> {

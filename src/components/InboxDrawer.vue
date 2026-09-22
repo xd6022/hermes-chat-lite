@@ -19,7 +19,18 @@ import { renderMarkdown } from '../lib/markdown'
 import { CATEGORY_FILTERS, categoryLabel, formatClock, formatWhen, levelMeta } from '../lib/inboxMeta'
 import { pollSetting } from '../lib/inboxSettings'
 import { isPolling, pollMs } from '../lib/inboxPoll'
-import { archive, inbox, refreshNow, readAll, setFilter, setRead, toggleDetail } from '../stores/inbox'
+import { isDefaultSince, sinceLabel } from '../lib/inboxSince'
+import {
+  archive,
+  inbox,
+  readAll,
+  refreshNow,
+  resetSince,
+  setFilter,
+  setRead,
+  setSinceInput,
+  toggleDetail,
+} from '../stores/inbox'
 import type { InboxMessage } from '../api/inbox'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'ask', msg: InboxMessage): void }>()
@@ -27,6 +38,21 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'ask', msg: InboxMessage): vo
 const refreshing = ref(false)
 
 const renderedBody = computed(() => (inbox.detail ? renderMarkdown(inbox.detail.body || '') : ''))
+
+/** 起始时间的人话（今天 00:00 起 / 不限 …） */
+const sinceText = computed(() => sinceLabel(inbox.sinceInput))
+/** 现在是不是"默认（当天 0 点）" —— 「今天 0 点」按钮的高亮用它 */
+const isDefaultWindow = computed(() => isDefaultSince(inbox.sinceInput))
+/**
+ * 是不是"收窄了的时间窗"（有值、且不是当天 0 点）。
+ *
+ * 空窗（不限）不算收窄 —— 否则会把"没有消息"错说成"这个时间之后没有消息"。
+ */
+const narrowWindow = computed(() => Boolean(inbox.sinceInput) && !isDefaultSince(inbox.sinceInput))
+
+function onSinceChange(e: Event): void {
+  void setSinceInput((e.target as HTMLInputElement).value)
+}
 
 const footerClock = computed(() => {
   if (inbox.error) return '上次拉取失败'
@@ -118,6 +144,42 @@ async function doRefresh(): Promise<void> {
         </button>
       </div>
 
+      <!-- 起始时间（v3.1）：默认当天 0 点；可以改；**刷新页面就还原**（只在内存里，不保存） -->
+      <div class="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-gray-200 px-4 py-2 text-xs dark:border-gray-800">
+        <span class="text-gray-400 dark:text-gray-500">只看</span>
+        <input
+          type="datetime-local"
+          data-testid="inbox-since"
+          class="rounded border border-gray-300 bg-transparent px-1.5 py-0.5 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
+          :value="inbox.sinceInput"
+          @change="onSinceChange"
+        />
+        <span data-testid="inbox-since-label" class="text-gray-500 dark:text-gray-400">{{ sinceText }}</span>
+        <button
+          type="button"
+          data-testid="inbox-since-today"
+          class="ml-auto rounded px-1.5 py-0.5 transition"
+          :class="
+            isDefaultWindow
+              ? 'text-gray-400 dark:text-gray-500'
+              : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800'
+          "
+          title="回到默认：当天 00:00"
+          @click="resetSince()"
+        >
+          今天 0 点
+        </button>
+        <button
+          type="button"
+          data-testid="inbox-since-all"
+          class="rounded px-1.5 py-0.5 text-gray-500 transition hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+          title="不限时间（看全部历史）"
+          @click="setSinceInput('')"
+        >
+          不限
+        </button>
+      </div>
+
       <!-- 失败提示：一行小字，不弹红字横幅 -->
       <div v-if="inbox.error" data-testid="inbox-error" class="px-4 py-1 text-xs text-amber-600 dark:text-amber-400">
         上次拉取失败：{{ inbox.error }}
@@ -126,8 +188,16 @@ async function doRefresh(): Promise<void> {
       <!-- 列表 -->
       <div class="min-h-0 flex-1 overflow-y-auto">
         <p v-if="!inbox.loaded && inbox.loading" class="p-6 text-center text-sm text-gray-400">正在加载…</p>
-        <p v-else-if="inbox.loaded && !inbox.messages.length" data-testid="inbox-empty" class="p-8 text-center text-sm text-gray-400">
-          没有消息
+        <p
+          v-else-if="inbox.loaded && !inbox.messages.length"
+          data-testid="inbox-empty"
+          class="p-8 text-center text-sm text-gray-400"
+        >
+          <template v-if="narrowWindow">
+            这个时间之后没有消息<br />
+            <span class="text-xs">（把上面时间往前调，或点「不限」）</span>
+          </template>
+          <template v-else>没有消息</template>
         </p>
         <ul v-else>
           <li

@@ -7,11 +7,35 @@
  *   - 移动端（<768px）：抽屉，默认收起，点按钮展开，选中会话后自动收起
  *   - 桌面端（≥768px）：常驻列，点按钮折叠/展开，选择记在 localStorage
  */
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Sidebar from './components/Sidebar.vue'
 import ChatWindow from './components/ChatWindow.vue'
 import Notice from './components/Notice.vue'
-import { checkHealth, clearBootError, goHome, loadSessions, openSession, resumeSync, store } from './stores/chat'
+import InboxBell from './components/InboxBell.vue'
+import InboxDrawer from './components/InboxDrawer.vue'
+import {
+  checkHealth,
+  clearBootError,
+  goHome,
+  loadSessions,
+  newChat,
+  openSession,
+  resumeSync,
+  send,
+  store,
+} from './stores/chat'
+import {
+  clearNewCount,
+  inbox,
+  onDrawerOpen,
+  reschedulePolling,
+  setRead,
+  startPolling,
+  stopPolling,
+} from './stores/inbox'
+import { POLL_OPTIONS } from './lib/inboxPoll'
+import { pollSetting, setPollSetting } from './lib/inboxSettings'
+import type { InboxMessage } from './api/inbox'
 import { currentRoute, markInitialRoute, navigate, onRouteChange, type Route } from './lib/route'
 import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
@@ -86,9 +110,62 @@ let unwatchForeground: (() => void) | null = null
  * 侧栏点击、返回键、手改地址、外链进来，走的都是同一条路 —— 所以地址和画面不会打架。
  */
 
-/** 轻提示（会自动消失）：目前只有"地址里的会话不存在"会用到 */
+/** 轻提示（会自动消失）：地址里的会话不存在、消息中心有新消息都会用到 */
 const notice = ref('')
 let offRoute: (() => void) | null = null
+
+/* ── 消息中心（v1，2026-09-22）────────────────────────────────────────
+ * 抽屉**不进地址**（与 Settings 一致）：它是覆盖层，不是"当前在哪"。
+ * 进地址会有个真问题：地址里只有一个位置，写上 `#/inbox` 就把会话 id 挤掉了 ⇒
+ * 刷新后会变成"欢迎页 + 抽屉开着"，比现在更差。要进地址得改成 `#/s/<id>/inbox` 那种带后缀的形态，
+ * 那是另一件事（要动 v2.12 那套路由），首期不做。
+ */
+const inboxOpen = ref(false)
+
+async function toggleInbox(): Promise<void> {
+  inboxOpen.value = !inboxOpen.value
+  // `关闭` 档下不自动拉（用户口径：关闭 = 连开抽屉也不拉，只有手动刷新才拉）
+  if (inboxOpen.value) await onDrawerOpen()
+}
+
+/** 轮询发现新消息 → 一句轻提示（5 秒自己走，点一下就没） */
+watch(
+  () => inbox.newCount,
+  (n) => {
+    if (n > 0) {
+      notice.value = `消息中心有 ${n} 条新消息`
+      clearNewCount()
+    }
+  },
+)
+
+/** 轮询档位改了要**按新档位重排定时器**（改完立刻生效，不用刷新、不用重建） */
+watch(pollSetting, () => reschedulePolling())
+
+/**
+ * 「就这条问 agent」：把这条消息当上下文发一轮（走现有发送链路，token 只在点的时候花）。
+ * - 生成中不让发（send 的守卫会静默丢掉，这里得说出来，否则用户以为点了没反应）；
+ * - 没有会话就先建一个，并把地址切过去（否则"问完看不见"）；
+ * - 顺手标记已读：都拿去问了，说明这条处理过了。
+ */
+async function askAbout(msg: InboxMessage): Promise<void> {
+  inboxOpen.value = false
+  if (store.streaming || store.run.phase === 'background') {
+    notice.value = '正在生成中，等这一轮结束再问'
+    return
+  }
+  if (!store.currentId) {
+    const id = await newChat()
+    if (!id) {
+      notice.value = '无法创建会话'
+      return
+    }
+    navigate(id, { mode: 'push' })
+  }
+  const body = inbox.detail && inbox.detail.id === msg.id ? inbox.detail.body : msg.excerpt
+  void setRead(msg.id, true)
+  await send(`【消息中心】${msg.title}\n\n${body || ''}\n\n（上面这条是消息中心里的提醒，请结合我的规则给处理建议。）`)
+}
 
 async function applyRoute(r: Route): Promise<void> {
   if (r.kind === 'home') {
@@ -129,11 +206,14 @@ onMounted(() => {
   void applyRoute(initial)
   // 欢迎页时也对一次账：页面可能是被系统回收后重新打开的（此时本轮 run 还在服务端跑）
   void resumeSync()
+  // 消息中心轮询（档位来自浏览器设置；`关闭` 档不排定时器）
+  startPolling()
 })
 
 onBeforeUnmount(() => {
   unwatchForeground?.()
   offRoute?.()
+  stopPolling()
 })
 </script>
 
@@ -166,9 +246,11 @@ onBeforeUnmount(() => {
         <span v-else>已连接</span>
       </span>
 
+      <InboxBell class="ml-auto" :open="inboxOpen" @toggle="toggleInbox()" />
+
       <button
         type="button"
-        class="ml-auto rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+        class="rounded-lg p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
         :title="theme === 'dark' ? '切换到白天模式' : '切换到黑夜模式'"
         :aria-label="theme === 'dark' ? '切换到白天模式' : '切换到黑夜模式'"
         @click="toggleTheme()"
@@ -210,6 +292,9 @@ onBeforeUnmount(() => {
 
   <!-- 会自动消失的轻提示（点击立即消失；5 秒后自己走） -->
   <Notice v-if="notice" :text="notice" @close="notice = ''" />
+
+  <!-- 消息中心抽屉（v1）：与 Settings 同一套骨架，`关闭` 档只是不自动拉，界面照常可用 -->
+  <InboxDrawer v-if="inboxOpen" @close="inboxOpen = false" @ask="askAbout" />
 
   <!-- Settings 抽屉（最小化：不做模型切换 / Prompt / Agent 配置） -->
   <div v-if="settings" class="fixed inset-0 z-40 bg-black/20 dark:bg-black/50" @click.self="settings = false">
@@ -291,6 +376,25 @@ onBeforeUnmount(() => {
           </div>
           <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
             每轮对话开头那个标记。改完立刻生效（存在这台浏览器里，不用重新构建）。
+          </p>
+        </section>
+
+        <section>
+          <h3 class="mb-2 text-xs font-medium text-gray-400 dark:text-gray-500">消息</h3>
+          <div class="flex items-center gap-2">
+            <span>自动刷新</span>
+            <select
+              data-testid="inbox-poll-select"
+              class="ml-auto rounded border border-gray-300 bg-transparent px-1.5 py-0.5 text-xs outline-none dark:border-gray-700 dark:bg-gray-900"
+              :value="pollSetting"
+              @change="setPollSetting(($event.target as HTMLSelectElement).value)"
+            >
+              <option v-for="o in POLL_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+            </select>
+          </div>
+          <p class="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            默认 5 分钟。`关闭` = 完全不自动拉取（点图标也不拉），只有抽屉里的「立即刷新」会拉。
+            这个设置存在这台浏览器里、改完立刻生效（手机和 PC 可以不一样）。
           </p>
         </section>
 

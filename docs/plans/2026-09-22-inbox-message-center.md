@@ -8,7 +8,7 @@
 | 阶段 | 状态 | 交付物 | 验收方式 |
 | --- | --- | --- | --- |
 | P0 计划书 | ✅ 完成 | 本文件 | 用户 review |
-| P1 数据层 | ✅ 完成（**只差正式表**） | DDL 已用同名冒烟表 `inbox_messages_smoke` 实测通过（建表/去重/摘要截断） | 见 §12 验证记录 |
+| P1 数据层 | ✅ 完成（正式表已核验） | 正式表 `inbox_messages` 已建并通过结构与索引核对（§12） | 见 §12 验证记录 |
 | P2 inbox 服务 | ✅ 完成 | `inbox/main.py` + `Dockerfile.inbox` + compose 的 `inbox` service + nginx `/inbox/` | 22 项接口断言全绿（§12） |
 | P3 投递腿 | ⬜ 未开始 | `scripts/notify.py` 助手 + 白名单脚本改写 + `sync_inbox_email.py` + cron | 跑一次脚本，按 DB 读回验证消息行 |
 | P4 前端 | ⬜ 未开始 | 图标 + 未读徽标 + 消息抽屉 + 等级灯 + Settings「消息」设置组 | vitest（新断言 RED/GREEN）+ 真浏览器探针 |
@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
 | --- | --- |
 | 会返工 | 白名单外的高频任务接进来必然淹没；未读态若存前端则换设备即丢 |
 | 渲染 | 股票提醒正文含**行情表格**，抽屉窄会被挤（v2.1 同类事故）；正文长（早盘简报 ~8k 字）⇒ 列表只给摘要、详情才全文 |
-| 时间 | 本机时区是 **UTC** ⇒ 脚本写 `occurred_at` 必须显式转 `Asia/Shanghai`；前端显示用浏览器时区；交易时段判定不在服务端做 |
+| 时间 | **容器 TZ 实测 = Asia/Shanghai（CST）**，`date` 直接给北京时间（2026-09-22 复核，此前误记为 UTC）；即便如此，脚本仍**显式**用 `ZoneInfo("Asia/Shanghai")` 生成 `occurred_at`，别依赖容器 TZ（TZ 一变就会静默写错 8 小时）；前端显示用浏览器时区 |
 | 可靠性 | `notify.py` 必须静默容错（通知挂掉绝不能影响交易脚本） |
 | 口径 | IMAP UID 在 163 上会变 ⇒ 去重必须用 `Message-ID`；163 有拉取限流 ⇒ 同步间隔 ≥15 分钟 |
 | 编码 | **中文不能进查询串**：`?category=股票信号` 会被 uvicorn 判成非法请求（空响应 + `Invalid HTTP request received`）⇒ category 存 ASCII 代码（§3）；正文里的中文没问题（JSON body 正常 UTF-8） |
@@ -215,3 +215,22 @@ grep -q '^INBOX_MYSQL_PASSWORD=' .env || printf 'INBOX_MYSQL_PASSWORD=hermes@106
 
 脚本留档（下次改完重跑即可）：`/opt/data/.verify/inbox_smoke_ddl.py`、`/opt/data/.verify/test_inbox_service.sh`、
 `/opt/data/.verify/run_inbox_smoke.sh`（起本地冒烟服务）、`/opt/data/.verify/mk_inbox_venv.sh`（建隔离 venv）。
+
+### §12.1 正式表核验（用户建表后，2026-09-22）
+
+| 验的什么 | 结果 |
+| --- | --- |
+| 结构：11 列的类型/可空/键/默认值/自增 逐列比对 `information_schema` | ✅ 与 §3 的 DDL **完全一致** |
+| 索引：`PRIMARY(id)` / `uk_source_external(source,external_id)` / `idx_unread(read_at,occurred_at)` / `idx_cat_time(category,occurred_at)` | ✅ 四条全对 |
+| 写库：插一条测试消息（`external_id=smoke:link-check:2026-09-22`），再推一次同 external_id | ✅ 无重复行（幂等） |
+| 服务打正式表端到端（uvicorn + 真库，本地 18124） | ✅ 17 项断言全绿：鉴权三态、列表摘要不带 body、详情全文、`+08:00`、类型过滤、标记已读、归档后撤出默认列表 |
+| 服务写下去的已读/归档**换独立连接直接读库**复核 | ✅ `read_at`/`archived_at` 均已落库（19:40:12） |
+| 遗留 | 表里留了 **1 条已归档的测试消息 id=1**（按"只归档不删除"的口径），要清掉说一声 |
+
+⚠️ 脚本本身踩的两个坑（已修，别再犯）：① 期望 `COLUMN_KEY` 时忘了 MySQL 的 `MUL` 只给多列索引的**第一列**、
+`auto_increment` 在 `EXTRA` 而不在 `DEFAULT` ⇒ 一版假报警 5 条；② 断言忘了真发请求，复用了上一条响应。
+
+### §12.2 时区复核（顺手纠正一条旧认知）
+
+`date` → **CST（Asia/Shanghai）**，`date -u` 才是 UTC ⇒ 容器 TZ 是**北京时间**（此前记的"本机是 UTC"是错的）。
+结论不变：脚本写 `occurred_at` 仍**显式**用 `ZoneInfo("Asia/Shanghai")`，不依赖容器 TZ。

@@ -10,7 +10,7 @@
 | P0 计划书 | ✅ 完成 | 本文件 | 用户 review |
 | P1 数据层 | ✅ 完成（正式表已核验） | 正式表 `inbox_messages` 已建并通过结构与索引核对（§12） | 见 §12 验证记录 |
 | P2 inbox 服务 | ✅ 完成 | `inbox/main.py` + `Dockerfile.inbox` + compose 的 `inbox` service + nginx `/inbox/` | 22 项接口断言全绿（§12） |
-| P3 投递腿 | 🟡 进行中 | ✅ `notify.py`（12 项自检全绿，见 §12.3）；⬜ 白名单脚本改调用点；⬜ `sync_inbox_email.py` + cron | 跑一次脚本，按 DB 读回验证消息行 |
+| P3 投递腿 | ✅ 完成 | `inbox/notify.py`（CLI + `push()` 函数入口）、`inbox/sync_inbox_email.py` + cron `3d862de00356`、`alert_588170.py` 接入 | 见 §12.3 / §12.4 |
 | P4 前端 | ⬜ 未开始 | 图标 + 未读徽标 + 消息抽屉 + 等级灯 + Settings「消息」设置组 | vitest（新断言 RED/GREEN）+ 真浏览器探针 |
 | P5 部署 | ⬜ 未开始 | 分支 push + 用户 `docker compose up -d --build` | 容器内网直问确认线上版本（不用口令） |
 
@@ -125,25 +125,44 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
 - **去重不靠"少推"**：`INSERT ... ON DUPLICATE KEY UPDATE id=id` ⇒ 哪怕脚本每 2 分钟触发一次也不会刷屏。
 - **时间显式取 Asia/Shanghai**（`ZoneInfo`），不依赖容器 TZ。
 
-**首期白名单（改脚本，每个脚本一行调用点）**：
+**首期白名单 —— 结论：只有 1 个脚本需要改，其余全部由「邮件同步腿」零改动覆盖。**
 
-| 任务 | job_id | 备注 |
-| --- | --- | --- |
-| 510210移动止盈监控 | a3494314d70a | 目前 deliver=email，邮件腿也会收到 → 两腿并存，靠 external_id 去重 |
-| 510210涨跌±1%邮箱提醒 | 4db04a052b41 | 方向进 external_id |
-| 三因子离场信号邮箱推送 | 071f9e5c5a15 | |
-| 510210止损+冷却期尾盘提醒 | 2a607e413ca9 | |
-| 588170急跌信号提醒 | 5420c444b523 | 目前 local |
-| 600259关键价提醒 | 81e7b813643b | 目前 local |
-| 模拟盘早间选股推送 | 9955cb4251f4 | 目前 local |
+> ★ 决策（2026-09-22，动手前查证后改的）：原计划是给 7 个提醒脚本各加一行 `notify` 调用点。
+> 实测发现**这批提醒本来就都已进邮箱**（有的由 cron 的 `deliver=email` 发、有的脚本自己发信），
+> 邮件腿会把它们搬进消息区；再在脚本里直推一次 = **同一个提醒出现两条**
+> （两腿的去重键不同：邮件是 `Message-ID`，直推是 `{事件}:{交易日}`，互相看不见）。
+> ⇒ 直推只留给**没有外发通道**的提醒。
+
+| 任务 | 脚本 | 外发通道 | 首期处理 |
+| --- | --- | --- | --- |
+| 588170急跌信号提醒 | `alert_588170.py` | **只 print**（cron `deliver=local`）⇒ 除了翻 cron 输出，您根本收不到 | ✅ **加 `push()` 直推**（唯一改动） |
+| 510210移动止盈监控 | `trailing_stop.sh` | cron `deliver=email` | 邮件腿覆盖，不改 |
+| 510210涨跌±1%提醒 | `alert_510210_pct.py` | cron `deliver=email` | 同上 |
+| 三因子离场信号推送 | `exit_signal_email.sh` | cron `deliver=email` | 同上 |
+| 510210止损+冷却期尾盘提醒 | `stop_loss_cooldown.py` | cron `deliver=email` | 同上 |
+| 600259关键价提醒 | `alert_600259_levels.py` | 脚本自己发信 | 同上 |
+| 模拟盘早间选股推送 | `sim_pick_daily.py` | 脚本自己发信 | 同上 |
+| 稀土现货日度采集 | `rare_earth_spot_daily.py` | 脚本自己发信 | 同上（本来不在首期名单，顺带覆盖了） |
 
 > 暂不会改：`*/2` 的 4 个高频轮询任务（多标实时监控、模拟盘持仓监控等）—— 每 2 分钟一次，全量接会一天几百条，把消息区淹没。
+> `notify` 以后真正的用武之地：① 不进邮箱的通知（任务异常、健诊结果）；② 需要比邮件腿更快到达的提醒；③ **以后新加的定时任务**（一行接入，前端不用动）。
 
-### 5.2 邮件同步 `sync_inbox_email.py`（cron，15 分钟）
 
+### 5.2 邮件同步 `inbox/sync_inbox_email.py`（cron，15 分钟）
+
+- **运行时**：cron 任务「消息中心-邮件同步」（`3d862de00356`，`*/15 * * * *`，`no_agent`，`deliver=local`）
+  跑 `scripts/sync_inbox_email.sh` → `.venv/bin/python3 scripts/sync_inbox_email.py --days 3 --max 50`
+  （wrapper 的必要性同 `archive_to_mysql.sh`：cron 的系统 python3 没有 pymysql）。
 - 凭据取法复刻 MCP `read_emails`：从 MySQL `email_accounts` 读 `xd6022@163.com` 的 IMAP 配置。
-- **只收自己发件箱来的通知邮件**（发件人 `xd602201@163.com`）→ 现有 6~7 个 `deliver=email` 的任务（早盘简报、日报、周报、记忆整理、各类触发提醒）**零改动自动进消息区**。
-- 去重按 `Message-ID`；等级：标题含触发/提醒/建议/止损/止盈 → `warn`，其余 `info`。
+- **只收自己发件箱来的通知邮件**（发件人 `xd602201@163.com`）→ 现有 6~7 个 `deliver=email` 的任务
+  （早盘简报、日报、周报、记忆整理、各类触发提醒、选股、稀土）**零改动自动进消息区**。
+- **只读不改邮箱**：`SELECT INBOX readonly=True` —— 绝不把邮件改成已读（实测跑完邮箱未读数不变）。
+- **163 必须发 IMAP ID 命令**（LOGIN 之后），否则 `SEARCH/FETCH` 直接 `BYE Unsafe Login`。
+- **等级只看标题**（扫正文会把"日报里提到止盈"误判成 action）：
+  `action`=触发/触及/止损/止盈/急跌/跌破/上破/异动/减仓/加仓/建议；`warn`=确认/提醒/信号/预警/离场/冷却/选股；其余 `info`。
+- **agent 型 cron 投递的邮件**主题是 `Re: Hermes Agent`、正文以 `Cronjob Response: <任务名>` 开头 ⇒
+  标题改取**任务名**，并把那段头部从正文里去掉。
+- 去重按 `Message-ID`（没有则退化成 主题+时间+发件人 的 sha1）；邮件原样留在邮箱里。
 
 ## §6 前端
 
@@ -260,3 +279,24 @@ grep -q '^INBOX_MYSQL_PASSWORD=' .env || printf 'INBOX_MYSQL_PASSWORD=hermes@106
 
 自检留下的 4 条消息（1 条链路冒烟 + 3 条 notify 自检）**已全部归档**，
 `inbox_messages` 当前 **未读 = 0**（前端首屏是干净的空态）。
+（重跑注意：`test_notify.sh` 的事件名带时间戳，否则同一天重跑会被去重吃掉 → "行数 +1"那条断言假红。）
+
+### §12.4 邮件同步腿（2026-09-22，真邮箱真库）
+
+| 验的什么 | 结果 |
+| --- | --- |
+| 抓取范围 | 近 3 天、发件人 `xd602201@163.com` ⇒ 抓到 **10 封**（含 4 封 agent 型 cron 投递 + 6 封脚本自己发的） |
+| 首次同步 | 新增 **10 条**（source=email），等级分布 action 3 / warn 3 / info 4 |
+| 二次同步（幂等） | 新增 **0 条**，去重命中 10 条 |
+| agent 型邮件的标题 | `Re: Hermes Agent` → 正确换成任务名（`每日早盘简报-XYY` /`记忆整理-每周强制`） |
+| 正文头部 | `Cronjob Response: …(job_id)…----` 那段已剥掉 |
+| **没有改动邮箱状态** | 跑完 IMAP `UNSEEN` 数 **77**（未被标成已读）——`readonly=True` 生效 |
+| wrapper 路径 | `bash scripts/sync_inbox_email.sh` 退出码 0、去重命中 10（cron 的真实调用姿势） |
+
+### §12.5 588170 直推链路（2026-09-22，端到端）
+
+用真脚本的副本（**只改两个测试旋钮**：交易时段强制 True、行情源换假报价 `-3.33%`，其余逻辑一字不动）
+跑真库：脚本 stdout 出告警 + 库里落一行 `source=cron / category=stock / level=action`、
+`external_id=588170:dipA:20260922`；再跑一次不新增行（当天去重）。
+`push()` 的日志走 stderr ⇒ **调用方的 stdout 保持干净**（那条 stdout 是 cron 的投递内容）。
+测试留档：`/opt/data/.verify/test_588170_notify.py`。

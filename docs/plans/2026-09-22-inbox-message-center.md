@@ -12,7 +12,7 @@
 | P2 inbox 服务 | ✅ 完成 | `inbox/main.py` + `Dockerfile.inbox` + compose 的 `inbox` service + nginx `/inbox/` | 22 项接口断言全绿（§12） |
 | P3 投递腿 | ✅ 完成 | `inbox/notify.py`（CLI + `push()` 函数入口）、`inbox/sync_inbox_email.py` + cron `3d862de00356`、`alert_588170.py` 接入 | 见 §12.3 / §12.4 |
 | P4 前端 | ✅ 完成 | 图标 + 未读徽标 + 消息抽屉 + 等级灯 + Settings「消息」设置组 | 366 项单测（新增 46，含 RED 核验）+ 真浏览器 18/18（§12.6） |
-| P5 部署 | ⬜ 未开始 | 分支 push（已推）+ 用户 `docker compose up -d --build` | 容器内网直问确认线上版本（不用口令） |
+| P5 部署 | ✅ 完成（2026-09-22 用户构建） | 用户 `docker compose up -d --build` 起 `chatlite` + `chatlite-inbox` | 容器内网直问：bundle `index-DZhQulUi.js` + v3.0 五处文案各 1、`/inbox/health` 200、反代 `/inbox/unread-count` 200；**真浏览器打线上 18/18**（§12.8） |
 
 ## §1 目标与范围
 
@@ -332,3 +332,24 @@ grep -q '^INBOX_MYSQL_PASSWORD=' .env || printf 'INBOX_MYSQL_PASSWORD=hermes@106
 - **RED 核验**（`/opt/data/.verify/redcheck_inbox.sh`）：把 **7 处实现**故意改坏（默认档 5m→1m、退避不再放大、
   info 灯改绿、昨天→前天、轮询每次都拉列表、开抽屉不看档位、灯色写死灰）⇒ **10 条断言变红**，验完自动还原。
   ⚠️ 没用 `git stash push -- src/`：新文件（未跟踪）会被一起收走 ⇒ 假绿（技能里记过这个坑）。
+
+### §12.8 线上复验（2026-09-22，用户部署后，18/18 全绿）
+
+探针 `/opt/data/.verify/probe_live_inbox.cjs`（也在技能脚本里：`scripts/verify_live_inbox.cjs`）——**浏览器直接打 http://chatlite**
+（容器内网，走 nginx 注入的 token，不用口令）：
+
+| 验的什么 | 结果 |
+| --- | --- |
+| 部署物确认 | bundle `index-DZhQulUi.js`；`就这条问 agent`/`hcl.inboxPoll`/`inbox-badge`/`没有消息`/`自动刷新已关闭` 各 **1** |
+| 服务健康 | `http://inbox:8080/health` → 200 `{ok:true,table:inbox_messages}`；经反代 `/inbox/unread-count` → 200 |
+| 徽标数字 = **服务端** unread_count | ✅ 界面 12 / 服务端 12 |
+| 抽屉 / 等级灯 / 类型与等级文案 | ✅ 12 条真消息；`bg-red-500`；`股票信号 · 今天 20:22 · 要动手` |
+| 摘要 vs 展开全文 | ✅ 摘要无尾部标记；展开有 |
+| 表格 table-wrapper + 页面不横滑 + 抽屉 480px | ✅ `docW 1280 = clientW 1280` |
+| 已读 / 归档（**读回服务端核对**） | ✅ 未读 12→11、界面徽标同步；归档后从列表消失 |
+| 筛选「邮件」 | ✅ 11 条全是邮件类 |
+| 轮询档位提示 | ✅ `每 5 分钟自动刷新` |
+| `pageerror` | ✅ 无 |
+
+**顺手拿到的活证据**：`#67 2026-09-22日报`（20:00 发出的邮件，20:02:38 入库）—— 说明线上整条链路
+（邮件 → cron 同步腿 → 消息表 → 前端）是真通的，不是只在容器里能跑。

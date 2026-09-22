@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
 | 口径 | IMAP UID 在 163 上会变 ⇒ 去重必须用 `Message-ID`；163 有拉取限流 ⇒ 同步间隔 ≥15 分钟 |
 | 编码 | **中文不能进查询串**：`?category=股票信号` 会被 uvicorn 判成非法请求（空响应 + `Invalid HTTP request received`）⇒ category 存 ASCII 代码（§3）；正文里的中文没问题（JSON body 正常 UTF-8） |
 | 安全 | inbox 服务拿 MySQL 凭据 ⇒ 多一个能写 `hermes_stock` 的进程：内部 token + 只在内网 + 走 Caddy 口令闸门；**库口令不写进仓库**，走 `.env` 的 `INBOX_MYSQL_PASSWORD` |
+| 部署 | compose 的 healthcheck 引号要当心：**YAML 折叠标量不处理反斜杠转义**（写 `python -c \"…\"` 会得到字面量引号 ⇒ 永远绿的假阳性）。现在写成外层单引号 + 内层双引号，并用 pyyaml 解析出真实字符串跑过真服务/死端口（`/opt/data/.verify/check_inbox_healthcheck.sh`） |
 
 ## §10 验证阶梯
 

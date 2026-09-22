@@ -40,6 +40,7 @@ function stubFetch(): void {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.includes('/read-all')) return json({ ok: true, updated: 2, unread_count: 0 })
       if (url.includes('/archive')) return json({ ok: true, unread_count: 0 })
       if (url.startsWith('/inbox/messages/'))
         return json({
@@ -177,6 +178,43 @@ describe('InboxDrawer：动作', () => {
     const { w } = await fresh()
     await w.find('[data-testid="inbox-close"]').trigger('click')
     expect(w.emitted('close')).toBeTruthy()
+  })
+})
+
+describe('InboxDrawer：一键已读（2026-09-22 用户反馈"看了但外面还显示未读"后挪到头部）', () => {
+  it('★ 按钮在**头部**（列表之前）、带未读数', async () => {
+    const { w } = await fresh([msg({ id: 1 }), msg({ id: 2 })])
+    const btn = w.find('[data-testid="inbox-read-all"]')
+    expect(btn.exists()).toBe(true)
+    expect(btn.text()).toContain('一键已读')
+    expect(btn.text()).toContain('(2)')
+
+    // 位置判据（比看 class 稳）：按钮出现在列表项之前的文档顺序里 ⇒ 它在头部，不在页脚
+    const firstItem = w.find('[data-testid="inbox-item"]').element
+    const pos = btn.element.compareDocumentPosition(firstItem)
+    expect(Boolean(pos & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+  })
+
+  it('★ 点了就清零：请求不带筛选、未读归零、头部改文案', async () => {
+    const { storeMod, w } = await fresh([msg({ id: 1 }), msg({ id: 2 })])
+    storeMod.inbox.filter = 'stock' // 故意先筛一个类型
+    await w.find('[data-testid="inbox-read-all"]').trigger('click')
+    await flushPromises()
+
+    const call = calls.find((c) => c.includes('/read-all'))
+    expect(call).toBeTruthy()
+    expect(call).not.toContain('category') // ← 带了筛选就只清一部分，徽标停在非 0
+    expect(storeMod.inbox.unread).toBe(0)
+    expect(w.text()).toContain('全部已读')
+    // 徽标数字应从外部消失（未读 0 不渲染徽标）
+    expect(w.find('[data-testid="inbox-read-all"]').text()).not.toContain('(')
+  })
+
+  it('没有未读时按钮禁用（不给出点了没反应的按钮）', async () => {
+    const { w } = await fresh([msg({ read: true })])
+    const btn = w.find('[data-testid="inbox-read-all"]')
+    expect(btn.attributes('disabled')).toBeDefined()
+    expect(btn.text()).not.toContain('(')
   })
 })
 

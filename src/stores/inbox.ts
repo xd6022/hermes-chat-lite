@@ -171,10 +171,15 @@ export async function setRead(id: number, read = true): Promise<void> {
   }
 }
 
-/** 全部已读（按当前筛选；`all` = 全部） */
+/** 全部已读。
+ *
+ * ⚠️ **不带筛选**（口径 2026-09-22 用户反馈后定）：这个按钮的标签就是"全部"，
+ * 若按当前筛选只清一部分，徽标会停在非 0（比如筛「邮件」时点它，剩股票类未读），
+ * 用户看到的现象就是"点了没用"。要按类型清就走接口的 category 参数，界面不再暴露。
+ */
 export async function readAll(): Promise<void> {
   try {
-    const res = await markAllRead(inbox.filter)
+    const res = await markAllRead()
     inbox.unread = res.unread_count
     for (const m of inbox.messages) m.read = true
     if (inbox.detail) inbox.detail.read = true

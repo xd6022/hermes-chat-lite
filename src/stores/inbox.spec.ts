@@ -39,6 +39,7 @@ function stubFetch(): void {
       const url = String(input)
       calls.push(`${init?.method ?? 'GET'} ${url}`)
       if (mode === 'fail') throw new TypeError('Failed to fetch')
+      if (url.includes('/read-all')) return json({ ok: true, updated: 2, unread_count: 0 })
       if (url.startsWith('/inbox/messages/') && url.includes('/read')) return json({ ok: true, unread_count: 2 })
       if (url.startsWith('/inbox/messages/') && url.includes('/archive')) return json({ ok: true, unread_count: 2 })
       if (url.startsWith('/inbox/messages/') && url.includes('/read-all')) return json({ ok: true, updated: 1, unread_count: 0 })
@@ -149,6 +150,18 @@ describe('消息中心 store：动作', () => {
     await s.setRead(11, true)
     expect(s.inbox.unread).toBe(2)
     expect(s.inbox.messages[0].read).toBe(true)
+  })
+
+  it('★ readAll 不带筛选（按钮语义是"全部"：按筛选只清一部分会让徽标停在非 0 ⇒ 看着像"点了没用"）', async () => {
+    const s = await fresh()
+    await s.setFilter('email') // 故意先筛一个类型
+    calls = []
+    await s.readAll()
+    const call = calls.find((c) => c.includes('/read-all'))
+    expect(call).toBeTruthy()
+    expect(call).not.toContain('category')
+    expect(s.inbox.unread).toBe(0)
+    expect(s.inbox.messages.every((m) => m.read)).toBe(true)
   })
 
   it('归档后从列表里移掉', async () => {

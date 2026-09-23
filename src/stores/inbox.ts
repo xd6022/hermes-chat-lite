@@ -5,6 +5,8 @@
  *  - 列表只显示**摘要**（服务端给的 200 字 `excerpt`），点开某条才拉全文；
  *  - **未读态在服务端**（`read_at`）⇒ 多标签、多设备天然一致；轮询档位在浏览器（每设备独立）；
  *  - `关闭` 档 = 完全不自动拉取：开抽屉/点图标也不拉，只有「立即刷新」拉；
+ *  - 轮询**首轮只建基线**：刷新页面时客户端未读是 0，不能把服务端原有未读当成"新消息"弹提示
+ *    （用户 2026-09-23 要求：刷新页面时不要弹窗提醒未读数量）；
  *  - 失败不弹红字、不打断：只在抽屉里留一行「上次拉取失败 …」，并按 `nextDelayMs` 退避
  *    （连续失败 ×2 放大，30 分钟封顶）；
  *  - 页面在后台时**不拉**（复用 `page-lifecycle` 的判定），回到前台立刻拉一次。
@@ -68,6 +70,16 @@ let unwatch: (() => void) | null = null
  */
 const unreadExempt = new Set<number>()
 
+/**
+ * 是否已经建立「未读基线」—— 本页面生命周期内**第一次成功拿到未读数**。
+ *
+ * 为什么需要：页面刚打开时 `inbox.unread` 是 0，服务端有几个未读就被当成"新增了几个"
+ * ⇒ 刷新一次就弹一句「消息中心有 N 条新消息」（那 N 条其实早就存在、徽标已经在显示）。
+ * 所以**首轮只建基线、不报增量**（用户 2026-09-23 要求：刷新页面时不要弹窗提醒未读数量）。
+ * 之后（同一个页面会话内）未读再变多才是真·新消息，照旧弹提示。
+ */
+let hasBaseline = false
+
 /** 测试/切档位用：清空状态 */
 export function resetInbox(): void {
   inbox.filter = 'all'
@@ -84,6 +96,7 @@ export function resetInbox(): void {
   inbox.detail = null
   inbox.detailLoading = false
   unreadExempt.clear()
+  hasBaseline = false
 }
 
 /** 当前起始时间对应的 API 参数（`null` = 不限） */
@@ -127,6 +140,7 @@ export async function loadInbox(): Promise<void> {
     inbox.messages = res.messages
     inbox.unread = res.unread_count
     inbox.loaded = true
+    hasBaseline = true
     onOk()
   } catch (e) {
     onFail(e)
@@ -138,11 +152,18 @@ export async function loadInbox(): Promise<void> {
 /**
  * 轮询一次：**只问未读数**（轻接口，省流量）。
  * 只有发现未读变多时才去拉列表 —— 否则每 5 分钟白拉 50 条消息。
+ *
+ * ★ 首轮（本页面打开后第一次拿到未读数）**只建基线**：刷新页面时客户端未读是 0，
+ *   若按"变多"处理，服务端原有的未读会被全部算成新消息 ⇒ 每次刷新都弹一句提示。
  */
 export async function pollInbox(): Promise<void> {
   try {
     const res = await getUnreadCount(apiSince())
-    if (res.unread_count > inbox.unread) {
+    if (!hasBaseline) {
+      // 只记基线：不拉列表、不写 newCount（=> App 不弹轻提示），徽标照常显示这个数
+      inbox.unread = res.unread_count
+      hasBaseline = true
+    } else if (res.unread_count > inbox.unread) {
       const diff = res.unread_count - inbox.unread
       await loadInbox()
       inbox.newCount = diff

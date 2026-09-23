@@ -153,6 +153,26 @@ describe('消息中心 store：轮询', () => {
     s.clearNewCount()
     expect(s.inbox.newCount).toBe(0)
   })
+
+  it('★ 刷新页面后的**首轮**轮询只建基线：不报新消息、也不白拉列表（用户 2026-09-23 要求）', async () => {
+    const s = await fresh()
+    // 模拟"刚打开/刚刷新页面"：没走过 loadInbox，客户端未读是 0，服务端有 3 条
+    calls = []
+    await s.pollInbox()
+    expect(s.inbox.newCount).toBe(0) // 旧实现：3 ⇒ 弹「消息中心有 3 条新消息」
+    expect(s.inbox.unread).toBe(3) // 徽标照常显示真实未读数
+    expect(calls.some((c) => c.startsWith('GET /inbox/messages?'))).toBe(false) // 首轮没有"新增"，不该拉列表
+  })
+
+  it('★ 基线建完之后未读再变多，照旧报新消息（别把提示一并改没了）', async () => {
+    const s = await fresh()
+    await s.pollInbox() // 首轮建基线 = 3
+    unread = 4
+    calls = []
+    await s.pollInbox()
+    expect(s.inbox.newCount).toBe(1)
+    expect(calls.some((c) => c.startsWith('GET /inbox/messages?'))).toBe(true)
+  })
 })
 
 describe('消息中心 store：动作', () => {

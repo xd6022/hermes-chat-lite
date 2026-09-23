@@ -35,6 +35,16 @@ import type { InboxMessage } from '../api/inbox'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'ask', msg: InboxMessage): void }>()
 
+/**
+ * 「立即刷新」的转圈反馈（用户 2026-09-23 要求）。
+ *
+ * 问题：点完若列表没有新增，界面毫无变化 ⇒ 看不出这一下生效了没有。
+ * 做法：点一下图标**转一圈**（360° 一次、不循环）——和浏览器刷新同一个肌肉记忆。
+ *  ① 最短 `SPIN_MS`：请求常常几十毫秒就回来，不兜底就是"一闪而过"，等于没反馈；
+ *  ② 转的期间按钮 disabled：防连点重复请求。
+ */
+const SPIN_MS = 600
+/** 正在转（= 正在刷新） */
 const refreshing = ref(false)
 
 const renderedBody = computed(() => (inbox.detail ? renderMarkdown(inbox.detail.body || '') : ''))
@@ -68,9 +78,17 @@ const pollHint = computed(() =>
 )
 
 async function doRefresh(): Promise<void> {
+  if (refreshing.value) return
   refreshing.value = true
-  await refreshNow()
-  refreshing.value = false
+  const started = Date.now()
+  try {
+    await refreshNow()
+  } finally {
+    // 兜底到最少转满一圈的时长：请求太快时"闪一下"等于没反馈（用户 2026-09-23 的诉求）
+    const rest = SPIN_MS - (Date.now() - started)
+    if (rest > 0) await new Promise((r) => setTimeout(r, rest))
+    refreshing.value = false
+  }
 }
 </script>
 
@@ -111,7 +129,14 @@ async function doRefresh(): Promise<void> {
           :disabled="refreshing"
           @click="doRefresh()"
         >
-          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <svg
+            viewBox="0 0 24 24"
+            class="h-4 w-4"
+            :class="refreshing ? 'refresh-spin' : ''"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
             <path d="M21 12a9 9 0 11-3-6.7M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </button>
@@ -285,3 +310,24 @@ async function doRefresh(): Promise<void> {
     </div>
   </div>
 </template>
+
+<style scoped>
+/**
+ * 「立即刷新」图标转一圈（用户 2026-09-23 要求：无新增消息时也要看得出按钮生效了）。
+ *
+ * 用自己的 keyframes 而不是 Tailwind 的 `animate-spin`：后者是 **1s/圈、无限循环**，
+ * 短请求下只转小半圈（看不出"转了一圈"）、还得额外管"何时停"。这里要的是**恰好一圈**。
+ * 时长与组件里的 `SPIN_MS` 对齐（600ms）。
+ */
+.refresh-spin {
+  animation: inbox-refresh-spin 600ms linear;
+}
+@keyframes inbox-refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+</style>

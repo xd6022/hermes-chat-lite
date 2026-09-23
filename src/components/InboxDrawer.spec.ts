@@ -302,3 +302,72 @@ describe('InboxDrawer：失败与关闭档的说明', () => {
     expect(w.find('[data-testid="inbox-poll-hint"]').text()).toContain('5 分钟')
   })
 })
+
+describe('InboxDrawer：「立即刷新」的转圈反馈（用户 2026-09-23 要求）', () => {
+  /**
+   * 诉求原话：「点击后，如果消息列表无新增消息时，看不出来这个按钮是否生效了，
+   * 可以像浏览器刷新一样，转一圈」。
+   * 所以这里锁两件事：① 转的类在请求期间挂上、结束后摘掉；
+   * ② **请求几十毫秒就回来也要转满最短时长**（否则一闪而过 = 等于没反馈）。
+   */
+  it('★ 请求期间图标在转、结束后停下（请求瞬间返回也不许一闪而过）', async () => {
+    vi.useFakeTimers()
+    try {
+      const { w } = await fresh()
+      const icon = () => w.find('[data-testid="inbox-refresh"] svg')
+      expect(icon().classes()).not.toContain('refresh-spin')
+
+      // 让请求挂在半空，模拟"点了但还没回来"
+      let release!: () => void
+      const gate = new Promise<void>((r) => {
+        release = r
+      })
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          calls.push(`GET ${String(input)}`)
+          await gate
+          return json({ unread_count: 1, messages: [msg()] })
+        }),
+      )
+
+      await w.find('[data-testid="inbox-refresh"]').trigger('click')
+      await Promise.resolve()
+      expect(icon().classes()).toContain('refresh-spin')
+
+      release()
+      await vi.advanceTimersByTimeAsync(0) // 请求已回来，但最短时长还没走完
+      expect(icon().classes()).toContain('refresh-spin')
+
+      await vi.advanceTimersByTimeAsync(600) // 转满一圈
+      expect(icon().classes()).not.toContain('refresh-spin')
+      expect(w.find('[data-testid="inbox-refresh"]').attributes('disabled')).toBeUndefined()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('★ 列表没有新增消息时，同样能看出按钮生效了（这次点击仍然转了）', async () => {
+    vi.useFakeTimers()
+    try {
+      const { w } = await fresh()
+      calls = []
+      // 服务端返回的是**同一批**消息（无新增 ⇒ 界面不会有任何变化，只能靠动画说话）
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          calls.push(`GET ${String(input)}`)
+          return json({ unread_count: 1, messages: [msg()] })
+        }),
+      )
+      await w.find('[data-testid="inbox-refresh"]').trigger('click')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(calls.some((c) => c.startsWith('GET /inbox/messages?'))).toBe(true)
+      expect(w.find('[data-testid="inbox-refresh"] svg').classes()).toContain('refresh-spin')
+      await vi.advanceTimersByTimeAsync(600)
+      expect(w.find('[data-testid="inbox-refresh"] svg').classes()).not.toContain('refresh-spin')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

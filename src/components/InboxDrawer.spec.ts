@@ -11,7 +11,20 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
+import { defaultSinceInput } from '../lib/inboxSince'
 import type * as InboxStore from '../stores/inbox'
+
+/**
+ * 当天的某个时刻（`datetime-local` 形态）。
+ *
+ * ⚠️ **不许在这里写死日期**：早先这条用例用的是「昨晚随手给的示例值」`2026-09-22T18:00`
+ * 加断言 `今天 18:00 起` —— 到了 9/23 那天它就成了「昨天 18:00 起」，用例**天天红一次**
+ * （红色追下去发现断言在跟日历赛跑，不是代码坏了）。日期一律由前端自己的
+ * `defaultSinceInput()`（当天 00:00）取**当天真实日期**再拼时间。
+ */
+function todayAt(hhmm: string): string {
+  return `${defaultSinceInput().slice(0, 10)}T${hhmm}`
+}
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -247,18 +260,19 @@ describe('InboxDrawer：起始时间窗（v3.1）', () => {
 
   it('★ 改时间 → 请求带上新时间（改完立刻生效）', async () => {
     const { w } = await fresh()
+    const at = todayAt('18:00') // 当天 18:00（例子里那个日期是示例数据，不写死）
     const input = w.find('[data-testid="inbox-since"]')
-    await input.setValue('2026-09-22T18:00')
+    await input.setValue(at)
     await input.trigger('change')
     await flushPromises()
     const list = calls.filter((c) => c.startsWith('GET /inbox/messages?')).pop()
-    expect(decodeURIComponent(list!)).toContain('2026-09-22T18:00:00')
+    expect(decodeURIComponent(list!)).toContain(`${at}:00`)
     expect(w.find('[data-testid="inbox-since-label"]').text()).toBe('今天 18:00 起')
   })
 
   it('点了「今天 0 点」回到默认', async () => {
     const { storeMod, w } = await fresh()
-    await storeMod.setSinceInput('2026-09-22T18:00')
+    await storeMod.setSinceInput(todayAt('18:00'))
     await w.vm.$nextTick()
     await w.find('[data-testid="inbox-since-today"]').trigger('click')
     await flushPromises()
@@ -268,7 +282,7 @@ describe('InboxDrawer：起始时间窗（v3.1）', () => {
 
   it('时间窗把消息挡没了时，空态要说清原因（不是一句"没有消息"）', async () => {
     const { storeMod, w } = await fresh([])
-    storeMod.inbox.sinceInput = '2026-09-22T18:00'
+    storeMod.inbox.sinceInput = todayAt('18:00')
     await w.vm.$nextTick()
     expect(w.find('[data-testid="inbox-empty"]').text()).toContain('这个时间之后没有消息')
     storeMod.inbox.sinceInput = ''

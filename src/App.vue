@@ -35,7 +35,7 @@ import {
 } from './stores/inbox'
 import { POLL_OPTIONS } from './lib/inboxPoll'
 import { pollSetting, setPollSetting } from './lib/inboxSettings'
-import type { InboxMessage } from './api/inbox'
+import type { InboxEmail, InboxMessage } from './api/inbox'
 import { currentRoute, markInitialRoute, navigate, onRouteChange, type Route } from './lib/route'
 import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
@@ -167,6 +167,30 @@ async function askAbout(msg: InboxMessage): Promise<void> {
   await send(`【消息中心】${msg.title}\n\n${body || ''}\n\n（上面这条是消息中心里的提醒，请结合我的规则给处理建议。）`)
 }
 
+/**
+ * 「就这封问 agent」（邮件 tab）。
+ *
+ * 与通知那版的区别：邮件**不落库**，正文就取刚拉到的详情（不再多一次请求）；
+ * ★ **不标已读** —— 邮件状态归邮箱，前端一概不动（用户 2026-09-24 定调）。
+ */
+async function askAboutEmail(mail: InboxEmail): Promise<void> {
+  inboxOpen.value = false
+  if (store.streaming || store.run.phase === 'background') {
+    notice.value = '正在生成中，等这一轮结束再问'
+    return
+  }
+  if (!store.currentId) {
+    const id = await newChat()
+    if (!id) {
+      notice.value = '无法创建会话'
+      return
+    }
+    navigate(id, { mode: 'push' })
+  }
+  const body = inbox.emailDetail && inbox.emailDetail.uid === mail.uid ? inbox.emailDetail.body : mail.excerpt
+  await send(`【邮箱】${mail.subject}\n\n${body || ''}\n\n（上面这封是我邮箱里的邮件，请结合我的规则给处理建议。）`)
+}
+
 async function applyRoute(r: Route): Promise<void> {
   if (r.kind === 'home') {
     goHome()
@@ -294,7 +318,7 @@ onBeforeUnmount(() => {
   <Notice v-if="notice" :text="notice" @close="notice = ''" />
 
   <!-- 消息中心抽屉（v1）：与 Settings 同一套骨架，`关闭` 档只是不自动拉，界面照常可用 -->
-  <InboxDrawer v-if="inboxOpen" @close="inboxOpen = false" @ask="askAbout" />
+  <InboxDrawer v-if="inboxOpen" @close="inboxOpen = false" @ask="askAbout" @ask-email="askAboutEmail" />
 
   <!-- Settings 抽屉（最小化：不做模型切换 / Prompt / Agent 配置） -->
   <div v-if="settings" class="fixed inset-0 z-40 bg-black/20 dark:bg-black/50" @click.self="settings = false">

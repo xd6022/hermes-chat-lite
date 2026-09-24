@@ -89,6 +89,27 @@ export default defineConfig(({ command }) => {
     },
   }
 
+  /**
+   * 消息中心（inbox）在 dev 也要连得上：生产由 nginx 在反代层注入 `X-Inbox-Token`
+   * （见 nginx.conf），dev 这里用**同一姿势**注入 —— 前端产物里始终没有密钥。
+   *
+   * 目标默认 `http://127.0.0.1:8080`（容器里 chatlite-inbox 的端口），可用 `INBOX_DEV_URL`
+   * 覆盖（比如本地用 uvicorn 起在别的端口时）。令牌与 /api 复用同一个 key（nginx 也是这么做的）。
+   */
+  const inboxProxy: ProxyOptions = {
+    target: process.env.INBOX_DEV_URL || 'http://127.0.0.1:8080',
+    changeOrigin: true,
+    headers: {
+      ...(API_KEY ? { 'X-Inbox-Token': API_KEY } : {}),
+      'Accept-Encoding': 'identity',
+    },
+    configure: (proxy) => {
+      proxy.on('proxyReq', (proxyReq) => {
+        proxyReq.removeHeader('origin')
+      })
+    },
+  }
+
   return {
     plugins: [vue()],
     // 界面角落显示的构建标识（`src/vite-env.d.ts` 里有声明）：
@@ -104,6 +125,8 @@ export default defineConfig(({ command }) => {
         '/api': upstream,
         '/v1': upstream,
         '/health': upstream,
+        // 消息中心（inbox）：dev 也要能开抽屉，否则本地只能看 UI 壳
+        '/inbox': inboxProxy,
       },
     },
     build: {

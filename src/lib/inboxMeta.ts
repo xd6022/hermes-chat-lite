@@ -30,11 +30,13 @@ export function levelMeta(v: unknown): { label: string; dot: string; text: strin
   return LEVEL_META[normalizeLevel(v)]
 }
 
-/** 顶部筛选项（`all` = 不传 category） */
+/** 顶部筛选项（`all` = 不传 category）
+ *
+ * ⚠️ 没有 `邮件` 这一项了（2026-09-24）：邮件改走「邮件」tab 实时直读邮箱，不再进消息表；
+ *    留着它只会筛出一堆历史旧行，等于两个入口说两件事。 */
 export const CATEGORY_FILTERS: readonly { value: string; label: string }[] = [
   { value: 'all', label: '全部' },
   { value: 'stock', label: '股票信号' },
-  { value: 'email', label: '邮件' },
   { value: 'alert', label: '提醒' },
   { value: 'system', label: '系统' },
 ]

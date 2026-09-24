@@ -12,6 +12,7 @@ COPY inbox/requirements.txt ./
 RUN pip install --no-cache-dir -i "$PIP_INDEX_URL" -r requirements.txt
 
 COPY inbox/main.py ./
+COPY inbox/mail.py ./
 
 # 运行时注入（compose 传进来）；不写默认值，避免误以为有值
 ENV INBOX_TOKEN=""

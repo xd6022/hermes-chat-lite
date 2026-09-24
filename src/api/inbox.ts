@@ -113,3 +113,59 @@ export function markAllRead(category?: string): Promise<{ ok: boolean; updated: 
 export function archiveMessage(id: number, archived = true): Promise<{ ok: boolean; unread_count: number }> {
   return call(`/inbox/messages/${id}/archive?archived=${archived ? 1 : 0}`, { method: 'POST' })
 }
+
+// ---- 邮件（实时直读邮箱，**不落库**；口径见后端 inbox/mail.py）------------
+//
+// 与通知的区别（用户 2026-09-24 定调）：
+//  - 邮件**不进消息表**，每次打开「邮件」tab 实时从邮箱拉 ⇒ 同一封邮件只有邮箱一份；
+//  - **只读**：没有"已读/归档"这类动作接口（碰邮箱状态是另一回事，明确不做）；
+//  - 范围 = 整个收件箱（后续可收窄）；附件不展示，只在详情提示有几个。
+
+export interface InboxEmail {
+  /** IMAP UID（字符串；详情接口要原样传回） */
+  uid: string
+  subject: string
+  from_name: string
+  from_addr: string
+  to_addr: string
+  /** 邮件头 Date 转北京时间，带 +08:00 */
+  occurred_at: string
+  excerpt: string
+  body_len: number
+  attachment_count: number
+  unread: boolean
+}
+
+export interface InboxEmailDetail extends InboxEmail {
+  /** 纯文本正文（服务端已把 HTML 退化成去标签文本，前端不注入邮件 HTML） */
+  body: string
+  attachments: string[]
+}
+
+export interface EmailListResponse {
+  days: number
+  limit: number
+  /** 这一屏里的未读封数（只读统计，不改邮箱状态） */
+  unread_count: number
+  messages: InboxEmail[]
+}
+
+export interface EmailListOptions {
+  /** 最近几天（按邮件 Date），后端上限 90 */
+  days?: number
+  /** 最多几封，后端上限 100 */
+  limit?: number
+  unreadOnly?: boolean
+}
+
+export function listEmails(opts: EmailListOptions = {}): Promise<EmailListResponse> {
+  const q = new URLSearchParams()
+  q.set('days', String(opts.days ?? 7))
+  q.set('limit', String(opts.limit ?? 30))
+  if (opts.unreadOnly) q.set('unread', '1')
+  return call<EmailListResponse>(`/inbox/email/messages?${q.toString()}`)
+}
+
+export function getEmail(uid: string): Promise<InboxEmailDetail> {
+  return call<InboxEmailDetail>(`/inbox/email/messages/${encodeURIComponent(uid)}`)
+}

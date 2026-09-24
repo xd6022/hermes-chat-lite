@@ -2,9 +2,12 @@
 
 职责**只有三件**：列表 / 未读数 / 标记已读·归档。
 
-- **不写入业务消息**：消息由推送方（cron 脚本、邮件同步脚本、agent）**直连 MySQL** 写入，
+- **不写入业务消息**：消息由推送方（cron 脚本、agent）**直连 MySQL** 写入，
   本服务不开写入接口 ⇒ 职责单一、少一跳、少一个能被外部灌数据的面。
 - **不删除**：只能归档（`archived_at`），防误删；要清理走 DB。
+- **邮件不落库**（2026-09-24 用户定调）：消息表只放 `notify.py` 推的通知；消息中心的
+  「邮件」tab 走 `/inbox/email/*`（`mail.py`）**实时直读邮箱**（只读、不改邮箱的已读状态）
+  —— 同一封邮件不再有"邮箱 + 消息表"两份副本。早盘简报这类长文只走邮件。
 - 鉴权：请求头 `X-Inbox-Token` 必须等于 `INBOX_TOKEN`；该头由 **nginx 注入**
   （与注入 `Authorization` 同一姿势）⇒ 前端产物里没有任何密钥。
 - 时区：库里 `occurred_at` 是 `Asia/Shanghai` 的 naive DATETIME（本机时区是 UTC，
@@ -12,7 +15,8 @@
 - 列表只返回**摘要**（`excerpt`），正文走详情接口：早盘简报这类正文几千字，
   50 条一起返回会把载荷撑到几百 KB。
 
-环境变量：MYSQL_HOST/PORT/USER/PASSWORD/DATABASE、INBOX_TABLE、INBOX_TOKEN。
+环境变量：MYSQL_HOST/PORT/USER/PASSWORD/DATABASE、INBOX_TABLE、INBOX_TOKEN
+（邮件另见 `mail.py`：INBOX_MAIL_ACCOUNT/FOLDER/TIMEOUT/EXCERPT_CHARS）。
 """
 
 import hmac
@@ -27,6 +31,8 @@ import pymysql
 from fastapi import Body, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pymysql.cursors import DictCursor
+
+import mail  # 邮箱直读（同目录，见 Dockerfile.inbox 的 COPY）
 
 # ---- 配置 ----------------------------------------------------------------
 
@@ -52,6 +58,11 @@ if not re.fullmatch(r"[A-Za-z0-9_]+", TABLE or ""):
     raise RuntimeError(f"INBOX_TABLE 非法: {TABLE!r}")
 
 LEVELS = ("action", "warn", "info")
+
+# 默认**不返回**的历史来源（2026-09-24 用户定调：邮件不再进消息表，改走 /inbox/email/* 实时直读）。
+# 同步脚本已停，但库里还留着它当时写进来的旧行 —— 不删（要清理走 DB），只是不再出现在列表里。
+# ⚠️ 列表与未读数**必须同口径**过滤：否则会出现"徽标显示 3 条未读、列表里一条都没有"的假象。
+HIDDEN_SOURCES = ("email",)
 
 # `since`（起始时间）：前端传带偏移的 ISO（如 `2026-09-22T00:00:00+08:00`），
 # 统一换算成 **Asia/Shanghai 的 naive 时间**再与 `occurred_at` 比较（库里存的就是这个口径）。
@@ -148,6 +159,9 @@ def _unread_count(conn: pymysql.connections.Connection, since: Optional[datetime
     """未读数。带 `since` 时只数**该时间之后**的（与列表同口径 ⇒ 徽标数字永远等于列表里未读的条数）。"""
     where = ["read_at IS NULL", "archived_at IS NULL"]
     params: List[Any] = []
+    if HIDDEN_SOURCES:
+        where.append(f"source NOT IN ({','.join(['%s'] * len(HIDDEN_SOURCES))})")
+        params.extend(HIDDEN_SOURCES)
     if since is not None:
         where.append("occurred_at >= %s")
         params.append(since)
@@ -204,6 +218,9 @@ def list_messages(
         where.append("archived_at IS NULL")
     if unread:
         where.append("read_at IS NULL")
+    if HIDDEN_SOURCES:
+        where.append(f"source NOT IN ({','.join(['%s'] * len(HIDDEN_SOURCES))})")
+        params.extend(HIDDEN_SOURCES)
     if category:
         where.append("category = %s")
         params.append(category)
@@ -291,6 +308,47 @@ def mark_read(
                 if not cur.fetchone():
                     raise HTTPException(status_code=404, detail="message not found")
         return {"ok": True, "unread_count": _unread_count(conn)}
+
+
+# ---- 邮件（实时直读邮箱，**不落库**）--------------------------------------
+# 口径见 mail.py 顶部：只读、不动邮箱已读状态、范围=整个收件箱、附件暂不支持。
+# 失败一律 503 + 人话 detail（前端展示 + 给重试按钮）；单封不存在 → 404。
+
+
+@app.get("/inbox/email/messages")
+def list_email_messages(
+    days: int = Query(default=7, ge=1, le=90, description="最近几天（按邮件 Date）"),
+    limit: int = Query(default=30, ge=1, le=100),
+    unread: int = Query(default=0, ge=0, le=1, description="1=只看未读（只读，不影响邮箱状态）"),
+    x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),
+) -> Dict[str, Any]:
+    """收件箱列表（实时 IMAP 拉取，不写库）。"""
+    _check_token(x_inbox_token)
+    try:
+        items = mail.list_emails(days=days, limit=limit, unread_only=bool(unread))
+    except mail.MailError as exc:
+        raise HTTPException(status_code=503, detail=f"读取邮箱失败：{exc}") from exc
+    return {
+        "days": days,
+        "limit": limit,
+        "unread_count": sum(1 for m in items if m.get("unread")),
+        "messages": items,
+    }
+
+
+@app.get("/inbox/email/messages/{uid}")
+def get_email_message(
+    uid: str,
+    x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),
+) -> Dict[str, Any]:
+    """单封全文（实时 IMAP 拉取，不写库）。"""
+    _check_token(x_inbox_token)
+    try:
+        return mail.get_email(uid)
+    except mail.MailNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except mail.MailError as exc:
+        raise HTTPException(status_code=503, detail=f"读取邮箱失败：{exc}") from exc
 
 
 @app.post("/inbox/messages/{msg_id}/archive")

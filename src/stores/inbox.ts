@@ -33,6 +33,18 @@ import { isPolling, nextDelayMs } from '../lib/inboxPoll'
 import { pollSetting } from '../lib/inboxSettings'
 import { defaultSinceInput, toApiSince } from '../lib/inboxSince'
 
+/**
+ * 「邮件」tab 的时间窗口径 —— **档位 1/3/7 天、默认 3 天**。
+ *
+ * 2026-09-24 用户口径（原话「这个7/30/90太大了」）⇒ 收窄到 1/3/7，默认从 7 改 3。
+ * ⚠️ **只此一份**：组件从这里 import，别在组件里再写一份数组（两边漂移就会出现
+ * "按钮上没有 3 天、默认却是 3"这类看不见的错）。后端 `inbox/main.py` 的
+ * `days` default/上限 = **3 / 7**，前端档位变了那边要跟着变。
+ */
+export const EMAIL_DAY_OPTIONS = [1, 3, 7] as const
+/** 默认时间窗（天）——«3» = 用户拍板值 */
+export const DEFAULT_EMAIL_DAYS = 3
+
 export const inbox = reactive({
   /** 当前筛选（`all` = 全部） */
   filter: 'all',
@@ -65,8 +77,8 @@ export const inbox = reactive({
   /** 当前 tab：通知（消息表）/ 邮件（实时读邮箱）。默认通知。 */
   tab: 'notice' as 'notice' | 'email',
   emails: [] as InboxEmail[],
-  /** 邮件时间窗（天）；后端上限 90 */
-  emailDays: 7,
+  /** 邮件时间窗（天）；档位 1/3/7、默认 3（后端上限 7） */
+  emailDays: DEFAULT_EMAIL_DAYS,
   /** 只看未读（只读过滤，不改邮箱状态） */
   emailUnreadOnly: false,
   emailLoaded: false,
@@ -120,7 +132,7 @@ export function resetInbox(): void {
   inbox.detailLoading = false
   inbox.tab = 'notice'
   inbox.emails = []
-  inbox.emailDays = 7
+  inbox.emailDays = DEFAULT_EMAIL_DAYS
   inbox.emailUnreadOnly = false
   inbox.emailLoaded = false
   inbox.emailLoading = false

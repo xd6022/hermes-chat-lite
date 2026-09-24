@@ -26,6 +26,7 @@ import { pollSetting } from '../lib/inboxSettings'
 import { isPolling, pollMs } from '../lib/inboxPoll'
 import { isDefaultSince, sinceLabel } from '../lib/inboxSince'
 import {
+  EMAIL_DAY_OPTIONS,
   archive,
   inbox,
   loadEmails,
@@ -49,9 +50,6 @@ const emit = defineEmits<{
   (e: 'ask', msg: InboxMessage): void
   (e: 'ask-email', mail: InboxEmail): void
 }>()
-
-/** 邮件时间窗候选（天）：后端上限 90 */
-const EMAIL_DAY_OPTIONS = [7, 30, 90] as const
 
 /** 两个 tab：通知（消息表）/ 邮件（实时读邮箱） */
 const TABS = [

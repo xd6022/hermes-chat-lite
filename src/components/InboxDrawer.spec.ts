@@ -439,9 +439,26 @@ describe('InboxDrawer：邮件 tab', () => {
     expect(w.find('[data-testid="inbox-since"]').exists()).toBe(false)
     expect(w.find('[data-testid="inbox-read-all"]').exists()).toBe(false)
     // 邮件工具条 + 只读提示在
-    expect(w.findAll('[data-testid="inbox-email-days"]').map((b) => b.text())).toEqual(['7 天', '30 天', '90 天'])
+    expect(w.findAll('[data-testid="inbox-email-days"]').map((b) => b.text())).toEqual(['1 天', '3 天', '7 天'])
     expect(w.find('[data-testid="inbox-email-unread-only"]').exists()).toBe(true)
     expect(w.find('[data-testid="inbox-email-hint"]').text()).toContain('只读')
+  })
+
+  it('★ 时间窗档位 = 1/3/7 天且**默认 3 天**；点一下按该 days 重拉（不是摆设）', async () => {
+    const { storeMod, w } = await freshEmail()
+    const btns = w.findAll('[data-testid="inbox-email-days"]')
+    expect(btns.map((b) => b.text())).toEqual(['1 天', '3 天', '7 天'])
+    // 默认值从 7 改成 3 之后最容易犯的两种错：① 选中态仍落在 7 上（改了 store 没改 reset）
+    // ② 档位数组里根本没有 3（前后端各写一份的老毛病）→ 两条一起断言
+    expect(btns.filter((b) => b.classes().includes('bg-gray-900')).map((b) => b.text())).toEqual(['3 天'])
+    expect(storeMod.inbox.emailDays).toBe(3)
+
+    await btns[0].trigger('click')
+    await flushPromises()
+    expect(storeMod.inbox.emailDays).toBe(1)
+    expect(
+      calls.some((c) => c.startsWith('GET /inbox/email/messages?') && c.includes('days=1')),
+    ).toBe(true)
   })
 
   it('★ 邮件未读不写进徽标：头部不显示"未读/一键已读"', async () => {

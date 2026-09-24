@@ -317,7 +317,7 @@ def mark_read(
 
 @app.get("/inbox/email/messages")
 def list_email_messages(
-    days: int = Query(default=7, ge=1, le=90, description="最近几天（按邮件 Date）"),
+    days: int = Query(default=3, ge=1, le=7, description="最近几天（按邮件 Date；档位 1/3/7，默认 3）"),
     limit: int = Query(default=30, ge=1, le=100),
     unread: int = Query(default=0, ge=0, le=1, description="1=只看未读（只读，不影响邮箱状态）"),
     x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),

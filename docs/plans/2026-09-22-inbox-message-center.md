@@ -404,3 +404,23 @@ grep -q '^INBOX_MYSQL_PASSWORD=' .env || printf 'INBOX_MYSQL_PASSWORD=hermes@106
    必须走 `URLSearchParams`（它编成 `%2B`）。探针里能看到真实 URL：`since=2026-09-22T12%3A00%3A00%2B08%3A00`。
 2. RED 核验脚本的备份名用了 `basename` ⇒ `src/api/inbox.ts` 与 `src/stores/inbox.ts` **同名互相覆盖**，
    还原时把 store 的内容写进了 api 文件（build 直接挂）。备份路径必须**带子目录**。
+
+### §12.11 「邮件」tab：实时直读邮箱 + 时间窗档位（v3.2，2026-09-24）
+
+**为什么有这一版**：早盘简报这类长文邮件经 gateway 投递层被 4000 字上限掐断（`MAX_PLATFORM_OUTPUT`，
+全文另存 `/opt/data/cron/output/…`），用户看到的正文是残的 ⇒ 邮件**不再同步进消息表**，回归"打开看一眼"：
+消息表只放 `notify.py` 推的短通知，邮件 tab **每次实连 163 IMAP**（只读、不动邮箱已读状态）。
+顺带修了投递侧：简报 cron 改 `deliver=local` + `send_review_report.py --period briefing` 脚本直发全文邮件。
+
+| 事 | 口径 |
+| --- | --- |
+| 端点 | `GET /inbox/email/messages`（days/limit/unread）、`GET /inbox/email/messages/{uid}`；`inbox/mail.py` |
+| 时间窗 | **档位 1 / 3 / 7 天、默认 3 天**（2026-09-24 用户：「这个7/30/90太大了」）⇒ 后端 `days` default/上限 = **3 / 7**，前端档位数组与默认值**只此一份**（`stores/inbox.ts` 的 `EMAIL_DAY_OPTIONS` / `DEFAULT_EMAIL_DAYS`） |
+| 只读 | `SELECT readonly=True`；前端没有已读/归档动作；邮件未读**不计入**徽标 |
+| 历史行 | 列表与未读数默认排除 `source='email'`（`HIDDEN_SOURCES`），旧行不删 |
+| 部署 | `Dockerfile.inbox` 多了 `COPY inbox/mail.py` ⇒ **必须 rebuild `chatlite-inbox`**，只重启旧镜像会 404 |
+
+**验证记录（v3.2 档位改动，2026-09-24）**：单测全量 **412 passed**（改口径：drawer 档位断言改写 + 新增"默认 3 天且点了真按新 days 重拉"、store 默认 days 断言改写）；`vue-tsc` 无错；`vite build` 通过；
+**真浏览器 9/9 全绿**（本地 dist + 反代线上 `/inbox`，真邮箱真数据）：档位恰好 `1/3/7 天`、默认选中 3 天、首屏请求 `days=3`、
+切档按新 days 重拉、条数单调（1 天=8 / 3 天=20 / 7 天=30，7 天顶到 `limit=30` 上限）、无 pageerror。
+探针：skill `hermes-chat-lite-dev` 的 `scripts/verify_inbox_email_days.cjs`。

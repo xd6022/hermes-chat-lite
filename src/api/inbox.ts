@@ -160,7 +160,7 @@ export interface EmailListOptions {
 
 export function listEmails(opts: EmailListOptions = {}): Promise<EmailListResponse> {
   const q = new URLSearchParams()
-  q.set('days', String(opts.days ?? 7))
+  q.set('days', String(opts.days ?? 3))
   q.set('limit', String(opts.limit ?? 30))
   if (opts.unreadOnly) q.set('unread', '1')
   return call<EmailListResponse>(`/inbox/email/messages?${q.toString()}`)

@@ -227,7 +227,7 @@ def _row(uid: Any, msg: email_lib.message.Message) -> Dict[str, Any]:
 # ---- 对外 -----------------------------------------------------------------
 
 
-def list_emails(days: int = 7, limit: int = 30, unread_only: bool = False) -> List[Dict[str, Any]]:
+def list_emails(days: int = 3, limit: int = 30, unread_only: bool = False) -> List[Dict[str, Any]]:
     """收件箱最近 `days` 天、最新的 `limit` 封（只读）。
 
     ⚠️ 每封都取 `RFC822`（= 含正文）：实测 30 封 1.16s、合计 141KB —— 换来列表能显示摘要，

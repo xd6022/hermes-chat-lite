@@ -64,7 +64,7 @@ beforeEach(() => {
 })
 
 describe('邮件 tab：拉取与筛选', () => {
-  it('切到「邮件」tab 才拉，默认 days=7 / limit=30 / 不带 unread', async () => {
+  it('切到「邮件」tab 才拉，默认 days=3（档位 1/3/7，2026-09-24 从 7 改小）/ limit=30 / 不带 unread', async () => {
     const s = await fresh()
     s.resetInbox()
     expect(calls.filter((c) => c.includes('/inbox/email'))).toHaveLength(0) // 切之前不拉
@@ -72,7 +72,7 @@ describe('邮件 tab：拉取与筛选', () => {
     await s.setTab('email')
     const mailCalls = calls.filter((c) => c.includes('/inbox/email'))
     expect(mailCalls).toHaveLength(1)
-    expect(mailCalls[0]).toBe('GET /inbox/email/messages?days=7&limit=30')
+    expect(mailCalls[0]).toBe('GET /inbox/email/messages?days=3&limit=30')
     expect(s.inbox.emails[0].subject).toBe(E1.subject)
     expect(s.inbox.emailUnread).toBe(1)
     expect(s.inbox.emailLoaded).toBe(true)
@@ -84,10 +84,11 @@ describe('邮件 tab：拉取与筛选', () => {
     await s.setTab('email')
 
     await s.setEmailUnreadOnly(true)
-    expect(calls[calls.length - 1]).toBe('GET /inbox/email/messages?days=7&limit=30&unread=1')
+    expect(calls[calls.length - 1]).toBe('GET /inbox/email/messages?days=3&limit=30&unread=1')
 
-    await s.setEmailDays(30)
-    expect(calls[calls.length - 1]).toBe('GET /inbox/email/messages?days=30&limit=30&unread=1')
+    // 档位内换一档（1/3/7）——顺带证明"改时间窗真的重拉"，参数是新的那个值
+    await s.setEmailDays(7)
+    expect(calls[calls.length - 1]).toBe('GET /inbox/email/messages?days=7&limit=30&unread=1')
   })
 
   it('★ 邮件不参与轮询：pollInbox 不碰 /inbox/email', async () => {

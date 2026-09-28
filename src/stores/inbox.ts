@@ -16,15 +16,11 @@
 import { reactive } from 'vue'
 import {
   archiveMessage,
-  getEmail,
   getMessage,
   getUnreadCount,
-  listEmails,
   listMessages,
   markAllRead,
   markRead,
-  type InboxEmail,
-  type InboxEmailDetail,
   type InboxMessage,
   type InboxMessageDetail,
 } from '../api/inbox'
@@ -33,17 +29,7 @@ import { isPolling, nextDelayMs } from '../lib/inboxPoll'
 import { pollSetting } from '../lib/inboxSettings'
 import { defaultSinceInput, toApiSince } from '../lib/inboxSince'
 
-/**
- * 「邮件」tab 的时间窗口径 —— **档位 1/3/7 天、默认 3 天**。
- *
- * 2026-09-24 用户口径（原话「这个7/30/90太大了」）⇒ 收窄到 1/3/7，默认从 7 改 3。
- * ⚠️ **只此一份**：组件从这里 import，别在组件里再写一份数组（两边漂移就会出现
- * "按钮上没有 3 天、默认却是 3"这类看不见的错）。后端 `inbox/main.py` 的
- * `days` default/上限 = **3 / 7**，前端档位变了那边要跟着变。
- */
-export const EMAIL_DAY_OPTIONS = [1, 3, 7] as const
-/** 默认时间窗（天）——«3» = 用户拍板值 */
-export const DEFAULT_EMAIL_DAYS = 3
+// ⚠️ 邮件的档位/默认值搬到 `stores/email.ts`（邮件已是顶栏独立图标，不在这里管）
 
 export const inbox = reactive({
   /** 当前筛选（`all` = 全部） */
@@ -73,24 +59,6 @@ export const inbox = reactive({
   detail: null as InboxMessageDetail | null,
   detailLoading: false,
 
-  // ---- 「邮件」tab（实时直读邮箱，**不落库**；2026-09-24 用户定调）--------
-  /** 当前 tab：通知（消息表）/ 邮件（实时读邮箱）。默认通知。 */
-  tab: 'notice' as 'notice' | 'email',
-  emails: [] as InboxEmail[],
-  /** 邮件时间窗（天）；档位 1/3/7、默认 3（后端上限 7） */
-  emailDays: DEFAULT_EMAIL_DAYS,
-  /** 只看未读（只读过滤，不改邮箱状态） */
-  emailUnreadOnly: false,
-  emailLoaded: false,
-  emailLoading: false,
-  /** 读邮箱失败的原因（人话，来自后端 detail）——抽屉里展示 + 给重试按钮 */
-  emailError: '',
-  /** 这一屏里的未读封数（**不计入徽标**：徽标只数通知，见文件头口径） */
-  emailUnread: 0,
-  emailLastOkAt: 0,
-  emailExpandedUid: null as string | null,
-  emailDetail: null as InboxEmailDetail | null,
-  emailDetailLoading: false,
 })
 
 let timer: ReturnType<typeof setTimeout> | null = null
@@ -130,18 +98,6 @@ export function resetInbox(): void {
   inbox.expandedId = null
   inbox.detail = null
   inbox.detailLoading = false
-  inbox.tab = 'notice'
-  inbox.emails = []
-  inbox.emailDays = DEFAULT_EMAIL_DAYS
-  inbox.emailUnreadOnly = false
-  inbox.emailLoaded = false
-  inbox.emailLoading = false
-  inbox.emailError = ''
-  inbox.emailUnread = 0
-  inbox.emailLastOkAt = 0
-  inbox.emailExpandedUid = null
-  inbox.emailDetail = null
-  inbox.emailDetailLoading = false
   unreadExempt.clear()
   hasBaseline = false
 }
@@ -229,17 +185,10 @@ export async function refreshNow(): Promise<void> {
 }
 
 /**
- * 打开抽屉时的动作。
- *
- * - `邮件` tab：**每次都实时去邮箱拉一次**（用户 2026-09-24：邮件就是"打开看一眼"的用法；
- *   通知那边照旧按轮询档位走，互不影响）。
- * - `通知` tab：非 `关闭` 档才自动拉（`关闭` 档只显示手上已有的数据）。
+ * 打开消息抽屉时的动作：非 `关闭` 档才自动拉（`关闭` 档只显示手上已有的数据）。
+ * （邮件不在这个抽屉里了 —— 顶栏独立图标 → `stores/email.ts` 的 `loadEmails()`。）
  */
 export async function onDrawerOpen(): Promise<void> {
-  if (inbox.tab === 'email') {
-    await loadEmails()
-    return
-  }
   if (isPolling(pollSetting.value)) await loadInbox()
 }
 
@@ -325,88 +274,6 @@ export async function archive(id: number): Promise<void> {
     }
   } catch (e) {
     onFail(e)
-  }
-}
-
-// ---- 「邮件」tab 的动作（**全部只读**：不给邮箱发任何写操作）----------------
-
-/**
- * 切 tab。首次进「邮件」自动拉一次。
- *
- * 邮件**不参与轮询**：`pollInbox` 只问通知的未读数（那个接口是 MySQL，几十毫秒）；
- * 邮件每次是实连 IMAP（~1s），跟着轮询跑等于白耗流量。
- */
-export async function setTab(tab: 'notice' | 'email'): Promise<void> {
-  if (inbox.tab === tab) return
-  inbox.tab = tab
-  if (tab === 'email' && !inbox.emailLoaded && !inbox.emailLoading) await loadEmails()
-}
-
-/** 拉一屏邮件（实时读邮箱）。失败**保留旧列表** + 记下原因（界面给重试按钮）。 */
-export async function loadEmails(): Promise<void> {
-  if (inbox.emailLoading) return
-  inbox.emailLoading = true
-  try {
-    const res = await listEmails({ days: inbox.emailDays, unreadOnly: inbox.emailUnreadOnly })
-    inbox.emails = res.messages
-    inbox.emailUnread = res.unread_count
-    inbox.emailLoaded = true
-    inbox.emailError = ''
-    inbox.emailLastOkAt = Date.now()
-  } catch (e) {
-    inbox.emailError = e instanceof Error ? e.message : String(e)
-  } finally {
-    inbox.emailLoading = false
-  }
-}
-
-/** 重试（错误行上的按钮）：先清错误再拉，避免"点了看不出有没有在动" */
-export async function retryEmails(): Promise<void> {
-  inbox.emailError = ''
-  await loadEmails()
-}
-
-/** 改时间窗并立刻重拉（改了不生效会像坏了） */
-export async function setEmailDays(days: number): Promise<void> {
-  if (inbox.emailDays === days) return
-  inbox.emailDays = days
-  inbox.emailExpandedUid = null
-  inbox.emailDetail = null
-  await loadEmails()
-}
-
-/** 「只看未读」开关（只读过滤，不动邮箱状态） */
-export async function setEmailUnreadOnly(on: boolean): Promise<void> {
-  if (inbox.emailUnreadOnly === on) return
-  inbox.emailUnreadOnly = on
-  inbox.emailExpandedUid = null
-  inbox.emailDetail = null
-  await loadEmails()
-}
-
-/**
- * 展开/收起某封；展开时按需拉全文。
- *
- * ★ **不标已读**：邮件只有一份（在您邮箱里），脚本刻意不动它的状态
- *   —— 所以这里既没有"标记已读"也没有"归档"（用户 2026-09-24 确认接受）。
- */
-export async function toggleEmailDetail(uid: string): Promise<void> {
-  if (inbox.emailExpandedUid === uid) {
-    inbox.emailExpandedUid = null
-    inbox.emailDetail = null
-    return
-  }
-  inbox.emailExpandedUid = uid
-  inbox.emailDetail = null
-  inbox.emailDetailLoading = true
-  try {
-    inbox.emailDetail = await getEmail(uid)
-    inbox.emailError = ''
-  } catch (e) {
-    inbox.emailError = e instanceof Error ? e.message : String(e)
-    inbox.emailExpandedUid = null
-  } finally {
-    inbox.emailDetailLoading = false
   }
 }
 

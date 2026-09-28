@@ -208,10 +208,10 @@ def _norm_uid(uid: Any) -> str:
     return str(uid)
 
 
-def _row(uid: Any, msg: email_lib.message.Message) -> Dict[str, Any]:
+def _row(uid: Any, msg: email_lib.message.Message, with_body: bool = False) -> Dict[str, Any]:
     body, files = extract_body(msg)
     name, addr = _split_addr(_decode_words(msg.get("From", "")))
-    return {
+    row: Dict[str, Any] = {
         "uid": _norm_uid(uid),
         "subject": _decode_words(msg.get("Subject", "")) or "(无主题)",
         "from_name": name,
@@ -222,16 +222,31 @@ def _row(uid: Any, msg: email_lib.message.Message) -> Dict[str, Any]:
         "body_len": len(body),
         "attachment_count": len(files),
     }
+    if with_body:
+        # 只给「写缓存」用（消息中心的邮件缓存表）；列表接口仍只回摘要，别把长正文塞进列表响应
+        row["body"] = body
+    return row
 
 
 # ---- 对外 -----------------------------------------------------------------
 
 
-def list_emails(days: int = 3, limit: int = 30, unread_only: bool = False) -> List[Dict[str, Any]]:
+def list_emails(
+    days: int = 3,
+    limit: int = 30,
+    unread_only: bool = False,
+    with_body: bool = False,
+    sender: str = "",
+) -> List[Dict[str, Any]]:
     """收件箱最近 `days` 天、最新的 `limit` 封（只读）。
 
     ⚠️ 每封都取 `RFC822`（= 含正文）：实测 30 封 1.16s、合计 141KB —— 换来列表能显示摘要，
     比"先取头再逐封补正文"少一轮往返。真慢了再改成两段式（头部 + 按需正文）。
+
+    `with_body=True`：返回值里带 `body`（给邮件缓存表落库用；列表接口不要开，响应会很大）。
+    `sender="x@y.com"`：只要这个发件人，**在 Python 侧过滤**（保持既有口径）。
+    ⚠️ 别改成 IMAP SEARCH 的 `FROM "..."`：163 上实测**一封都匹配不到**（搜索返回 0 封），
+    而同样的条件在 Python 侧过滤能正常拿到（`SINCE` 只有天粒度，本来就全量拉完再筛）。
     """
     since = (datetime.now(BJ) - timedelta(days=days)).strftime("%d-%b-%Y")
     criteria = f"(SINCE {since}{' UNSEEN' if unread_only else ''})"
@@ -248,7 +263,9 @@ def list_emails(days: int = 3, limit: int = 30, unread_only: bool = False) -> Li
             status, msg_data = imap.uid("fetch", uid, "(RFC822)")
             if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
                 continue
-            row = _row(uid, email_lib.message_from_bytes(msg_data[0][1]))
+            row = _row(uid, email_lib.message_from_bytes(msg_data[0][1]), with_body=with_body)
+            if sender and sender.lower() not in str(row.get("from_addr", "")).lower():
+                continue
             row["unread"] = uid in unseen
             out.append(row)
         return out

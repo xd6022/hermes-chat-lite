@@ -5,9 +5,12 @@
 - **不写入业务消息**：消息由推送方（cron 脚本、agent）**直连 MySQL** 写入，
   本服务不开写入接口 ⇒ 职责单一、少一跳、少一个能被外部灌数据的面。
 - **不删除**：只能归档（`archived_at`），防误删；要清理走 DB。
-- **邮件不落库**（2026-09-24 用户定调）：消息表只放 `notify.py` 推的通知；消息中心的
-  「邮件」tab 走 `/inbox/email/*`（`mail.py`）**实时直读邮箱**（只读、不改邮箱的已读状态）
-  —— 同一封邮件不再有"邮箱 + 消息表"两份副本。早盘简报这类长文只走邮件。
+- **邮件缓存表**（2026-09-28 用户改口径，反转 09-24 的"邮件不落库"）：邮件走
+  `/inbox/email/cache*` **读 `inbox_emails` 缓存表**（瞬时、离线可读、可翻历史）；
+  缓存由「定时拉取（交易日 9–15 每整点）+ 页面刷新按钮」经 `/inbox/email/refresh` 写入，
+  仍是 **IMAP 只读**（`readonly=True`，绝不动邮箱的已读状态）。
+  消息表 `inbox_messages` 只放通知/待办；邮件正文绝不写进消息表（长文会撑爆列表响应）。
+  ⚠️ 老口径别再当作"正确"来"纠正"本文件。
 - 鉴权：请求头 `X-Inbox-Token` 必须等于 `INBOX_TOKEN`；该头由 **nginx 注入**
   （与注入 `Authorization` 同一姿势）⇒ 前端产物里没有任何密钥。
 - 时区：库里 `occurred_at` 是 `Asia/Shanghai` 的 naive DATETIME（本机时区是 UTC，
@@ -19,11 +22,12 @@
 （邮件另见 `mail.py`：INBOX_MAIL_ACCOUNT/FOLDER/TIMEOUT/EXCERPT_CHARS）。
 """
 
+import hashlib
 import hmac
 import os
 import re
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, Iterator, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -50,6 +54,20 @@ _DB_CONFIG: Dict[str, Any] = {
 }
 
 TABLE = os.environ.get("INBOX_TABLE", "inbox_messages")
+
+# ---- 邮件缓存（v3.3）-----------------------------------------------------
+# 页面只读这张表；写它只有两条路：定时任务（交易日 9–15 每整点）与页面上的「刷新」按钮，
+# 都走 POST /inbox/email/refresh（实时 IMAP 只读拉一次 → upsert）。
+CACHE_TABLE = os.environ.get("INBOX_EMAIL_TABLE", "inbox_emails")
+# 缓存**一次拉多少天**：页面档位最大 7 天 ⇒ 缓存按 7 天保底，切档位不再连 IMAP。
+CACHE_DAYS = int(os.environ.get("INBOX_EMAIL_CACHE_DAYS", "7"))
+# 只缓存"自己发的"通知 —— 沿用邮件同步腿的既有规则（`INBOX_MAIL_SENDER`），**不新增过滤口径**。
+CACHE_SENDER = os.environ.get("INBOX_MAIL_SENDER", "xd602201@163.com")
+# 一次拉多少封（缓存窗口内）
+CACHE_LIMIT = int(os.environ.get("INBOX_EMAIL_CACHE_LIMIT", "50"))
+
+if not re.fullmatch(r"[A-Za-z0-9_]+", CACHE_TABLE or ""):
+    raise RuntimeError(f"INBOX_EMAIL_TABLE 非法: {CACHE_TABLE!r}")
 TOKEN = os.environ.get("INBOX_TOKEN", "")
 EXCERPT_CHARS = int(os.environ.get("INBOX_EXCERPT_CHARS", "200"))
 
@@ -349,6 +367,131 @@ def get_email_message(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except mail.MailError as exc:
         raise HTTPException(status_code=503, detail=f"读取邮箱失败：{exc}") from exc
+
+
+# ---- 邮件缓存（v3.3）：页面读缓存，不再实时连 IMAP -------------------------------
+
+
+def _cache_out(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "message_id": row.get("message_id"),
+        "uid": row.get("uid"),
+        "subject": row.get("subject"),
+        "from_name": row.get("from_name"),
+        "from_addr": row.get("from_addr"),
+        "to_addr": row.get("to_addr"),
+        "occurred_at": _iso(row.get("occurred_at")),
+        "excerpt": row.get("excerpt") or "",
+        "body_len": int(row.get("body_len") or 0),
+        "attachment_count": int(row.get("attachment_count") or 0),
+        "fetched_at": _iso(row.get("fetched_at")),
+    }
+
+
+@app.get("/inbox/email/cache")
+def email_cache_list(
+    days: int = Query(default=1, ge=1, le=30, description="最近几天（含今天）：1=今天、3=今天+前两天"),
+    limit: int = Query(default=50, ge=1, le=200),
+    x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),
+) -> Dict[str, Any]:
+    """缓存列表（**不连 IMAP**，瞬时返回）。`days` 是**显示窗口**，与缓存窗口解耦。"""
+    _check_token(x_inbox_token)
+    start = (datetime.now(BJ) - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, message_id, uid, subject, from_name, from_addr, to_addr, occurred_at, "
+                f"LEFT(COALESCE(body, ''), {EXCERPT_CHARS}) AS excerpt, body_len, attachment_count, fetched_at "
+                f"FROM `{CACHE_TABLE}` WHERE occurred_at >= %s ORDER BY occurred_at DESC LIMIT %s",
+                [start.replace(tzinfo=None), limit],
+            )
+            rows = cur.fetchall() or []
+            cur.execute(f"SELECT MAX(fetched_at) AS f, COUNT(*) AS n FROM `{CACHE_TABLE}`")
+            agg = cur.fetchone() or {}
+    return {
+        "days": days,
+        "count": len(rows),
+        "fetched_at": _iso(agg.get("f")),
+        "cached_total": int(agg.get("n") or 0),
+        "messages": [_cache_out(r) for r in rows],
+    }
+
+
+@app.get("/inbox/email/cache/{row_id}")
+def email_cache_detail(
+    row_id: int,
+    x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),
+) -> Dict[str, Any]:
+    """缓存里的单封全文（同样不连 IMAP）。"""
+    _check_token(x_inbox_token)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, message_id, uid, subject, from_name, from_addr, to_addr, occurred_at, body, "
+                f"body_len, attachment_count, fetched_at FROM `{CACHE_TABLE}` WHERE id = %s",
+                [row_id],
+            )
+            row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="邮件不在缓存里（可能已被清理）")
+    out = _cache_out({**row, "excerpt": ""})
+    out["body"] = row.get("body") or ""
+    return out
+
+
+@app.post("/inbox/email/refresh")
+def email_cache_refresh(
+    days: int = Query(default=CACHE_DAYS, ge=1, le=30, description="一次拉多少天（默认=缓存窗口 7 天）"),
+    limit: int = Query(default=CACHE_LIMIT, ge=1, le=200),
+    x_inbox_token: Optional[str] = Header(default=None, alias="X-Inbox-Token"),
+) -> Dict[str, Any]:
+    """**实时连 IMAP 拉一次并写缓存**（定时任务与页面刷新按钮共用这一条路）。
+
+    只读：`SELECT ... readonly=True`，不改您邮箱的已读状态。失败 → 503 + 人话 detail（前端给重试按钮）。
+    """
+    _check_token(x_inbox_token)
+    try:
+        items = mail.list_emails(days=days, limit=limit, with_body=True, sender=CACHE_SENDER)
+    except mail.MailError as exc:
+        raise HTTPException(status_code=503, detail=f"读取邮箱失败：{exc}") from exc
+
+    inserted = updated = 0
+    now = datetime.now(BJ).replace(tzinfo=None)
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            for m in items:
+                mid = str(m.get("message_id") or "")
+                if not mid:
+                    # 没有 Message-ID 的邮件：用 主题+时间+发件人 的稳定散列兜底（口径同邮件同步腿）
+                    mid = "sha1:" + hashlib.sha1(
+                        f"{m.get('subject')}|{m.get('occurred_at')}|{m.get('from_addr')}".encode("utf-8")
+                    ).hexdigest()
+                cur.execute(
+                    f"INSERT INTO `{CACHE_TABLE}` "
+                    f"(message_id, uid, from_name, from_addr, to_addr, subject, occurred_at, body, body_len, "
+                    f"attachment_count, fetched_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                    f"ON DUPLICATE KEY UPDATE uid=VALUES(uid), subject=VALUES(subject), occurred_at=VALUES(occurred_at), "
+                    f"body=VALUES(body), body_len=VALUES(body_len), attachment_count=VALUES(attachment_count), "
+                    f"fetched_at=VALUES(fetched_at)",
+                    [mid[:191], str(m.get("uid") or "")[:64], (m.get("from_name") or "")[:191],
+                     (m.get("from_addr") or "")[:191], (m.get("to_addr") or "")[:255],
+                     (m.get("subject") or "")[:255], m.get("occurred_at") or now,
+                     m.get("body") or "", int(m.get("body_len") or 0),
+                     int(m.get("attachment_count") or 0), now],
+                )
+                if cur.rowcount == 1:
+                    inserted += 1
+                else:
+                    updated += 1
+    return {
+        "days": days,
+        "pulled": len(items),
+        "inserted": inserted,
+        "updated": updated,
+        "fetched_at": _iso(now),
+        "sender": CACHE_SENDER,
+    }
 
 
 @app.post("/inbox/messages/{msg_id}/archive")

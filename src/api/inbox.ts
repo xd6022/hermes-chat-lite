@@ -114,58 +114,72 @@ export function archiveMessage(id: number, archived = true): Promise<{ ok: boole
   return call(`/inbox/messages/${id}/archive?archived=${archived ? 1 : 0}`, { method: 'POST' })
 }
 
-// ---- 邮件（实时直读邮箱，**不落库**；口径见后端 inbox/mail.py）------------
+// ---- 邮件（读缓存表 `inbox_emails`；2026-09-28 起不再实时连 IMAP）----------
 //
-// 与通知的区别（用户 2026-09-24 定调）：
-//  - 邮件**不进消息表**，每次打开「邮件」tab 实时从邮箱拉 ⇒ 同一封邮件只有邮箱一份；
-//  - **只读**：没有"已读/归档"这类动作接口（碰邮箱状态是另一回事，明确不做）；
-//  - 范围 = 整个收件箱（后续可收窄）；附件不展示，只在详情提示有几个。
+// 口径（用户 2026-09-28 拍板，反转 09-24 的"打开实时读邮箱"）：
+//  - 缓存由「定时拉取（交易日 9–15 每整点）+ 页面刷新按钮」写入，页面**只读缓存** ⇒ 打开瞬时、离线可读；
+//  - **只读**：没有已读/归档动作 —— 邮箱状态一概不动（服务端 IMAP 一律 readonly）；
+//  - 邮件未读**不计入顶栏徽标**（徽标只数通知），所以邮件图标上不带数字；
+//  - 正文是服务端去标签后的纯文本（邮件 HTML 绝不注入前端）。
 
-export interface InboxEmail {
-  /** IMAP UID（字符串；详情接口要原样传回） */
+export interface CachedEmail {
+  id: number
+  message_id: string
   uid: string
   subject: string
   from_name: string
   from_addr: string
   to_addr: string
-  /** 邮件头 Date 转北京时间，带 +08:00 */
+  /** 邮件头 Date（北京时间，带 +08:00） */
   occurred_at: string
   excerpt: string
   body_len: number
   attachment_count: number
-  unread: boolean
+  /** 这封最近一次从 IMAP 拉到的时刻（缓存新鲜度） */
+  fetched_at: string
 }
 
-export interface InboxEmailDetail extends InboxEmail {
-  /** 纯文本正文（服务端已把 HTML 退化成去标签文本，前端不注入邮件 HTML） */
+export interface CachedEmailDetail extends CachedEmail {
   body: string
-  attachments: string[]
 }
 
-export interface EmailListResponse {
+export interface CachedEmailList {
   days: number
-  limit: number
-  /** 这一屏里的未读封数（只读统计，不改邮箱状态） */
-  unread_count: number
-  messages: InboxEmail[]
+  count: number
+  /** 整张缓存表最近一次拉取时刻（空缓存 = null） */
+  fetched_at: string | null
+  cached_total: number
+  messages: CachedEmail[]
 }
 
-export interface EmailListOptions {
-  /** 最近几天（按邮件 Date），后端上限 90 */
-  days?: number
-  /** 最多几封，后端上限 100 */
-  limit?: number
-  unreadOnly?: boolean
+export interface EmailRefreshResult {
+  days: number
+  pulled: number
+  inserted: number
+  updated: number
+  fetched_at: string
+  sender: string
 }
 
-export function listEmails(opts: EmailListOptions = {}): Promise<EmailListResponse> {
+/** 读缓存（**不连 IMAP**，瞬时返回）。`days` 是显示窗口：1=今天、3=今天+前两天 */
+export function listCachedEmails(opts: { days?: number; limit?: number } = {}): Promise<CachedEmailList> {
   const q = new URLSearchParams()
-  q.set('days', String(opts.days ?? 3))
-  q.set('limit', String(opts.limit ?? 30))
-  if (opts.unreadOnly) q.set('unread', '1')
-  return call<EmailListResponse>(`/inbox/email/messages?${q.toString()}`)
+  q.set('days', String(opts.days ?? 1))
+  q.set('limit', String(opts.limit ?? 50))
+  return call<CachedEmailList>(`/inbox/email/cache?${q.toString()}`)
 }
 
-export function getEmail(uid: string): Promise<InboxEmailDetail> {
-  return call<InboxEmailDetail>(`/inbox/email/messages/${encodeURIComponent(uid)}`)
+export function getCachedEmail(id: number): Promise<CachedEmailDetail> {
+  return call<CachedEmailDetail>(`/inbox/email/cache/${id}`)
+}
+
+/** 刷新 = 让服务端实时连一次 IMAP 并写缓存（只读）。**全项目唯一会碰 IMAP 的调用**
+ *
+ * `days` 用缓存窗口（7 天）而不是当前显示档位：一次拉够，之后切 1/3/7 档就只是读缓存、不再连邮箱。
+ */
+export function refreshEmails(opts: { days?: number; limit?: number } = {}): Promise<EmailRefreshResult> {
+  const q = new URLSearchParams()
+  q.set('days', String(opts.days ?? 7))
+  q.set('limit', String(opts.limit ?? 50))
+  return call<EmailRefreshResult>(`/inbox/email/refresh?${q.toString()}`, { method: 'POST' })
 }

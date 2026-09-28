@@ -30,8 +30,6 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 let calls: string[] = []
-/** 邮件接口的桩开关：'fail' 时抛网络错（验证"明确报错 + 重试按钮"） */
-let emailMode: 'ok' | 'fail' = 'ok'
 
 function msg(over: Record<string, unknown> = {}) {
   return {
@@ -49,22 +47,6 @@ function msg(over: Record<string, unknown> = {}) {
   }
 }
 
-/** 邮件 tab 的样本邮件（字段与后端 /inbox/email/* 一致） */
-function email(over: Record<string, unknown> = {}) {
-  return {
-    uid: '1315301460',
-    subject: '📊 模拟盘早间选股 2026-09-24',
-    from_name: 'Hermes',
-    from_addr: 'xd602201@163.com',
-    to_addr: 'xd6022@163.com',
-    occurred_at: '2026-09-24T09:20:40+08:00',
-    excerpt: '摘要一行（服务端压成一行）',
-    body_len: 638,
-    attachment_count: 0,
-    unread: true,
-    ...over,
-  }
-}
 
 function stubFetch(): void {
   vi.stubGlobal(
@@ -72,12 +54,9 @@ function stubFetch(): void {
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       calls.push(`${init?.method ?? 'GET'} ${url}`)
-      // ---- 邮件 tab（实时直读邮箱）----
-      if (url.startsWith('/inbox/email/')) {
-        if (emailMode === 'fail') throw new TypeError('Failed to fetch')
-        if (/\/inbox\/email\/messages\/[^?]+$/.test(url)) return json({ ...email(), body: '邮件正文（纯文本）' })
-        return json({ days: 7, limit: 30, unread_count: 1, messages: [email()] })
-      }
+      // 邮件已搬到顶栏独立图标（v3.3）：抽屉这边**不该**发任何 /inbox/email 请求，
+      // 真发了就直接炸出来（比静默放过更能挡住回退）。
+      if (url.startsWith('/inbox/email')) throw new Error(`抽屉不该请求邮件接口: ${url}`)
       if (url.includes('/read-all')) return json({ ok: true, updated: 2, unread_count: 0 })
       if (url.includes('/archive')) return json({ ok: true, unread_count: 0 })
       if (url.startsWith('/inbox/messages/'))
@@ -105,7 +84,6 @@ async function fresh(rows: Record<string, unknown>[] = [msg()]) {
 
 beforeEach(() => {
   calls = []
-  emailMode = 'ok'
   localStorage.clear()
   stubFetch()
 })
@@ -412,100 +390,22 @@ describe('InboxDrawer：「立即刷新」的转圈反馈（用户 2026-09-23 �
   })
 })
 
-// ── 「邮件」tab（2026-09-24：实时直读邮箱、不落库）────────────────────────────
+// ── 邮件已搬到顶栏独立图标（v3.3，2026-09-28）────────────────────────────────
 
-/** 邮件 tab 的挂载：预置成"邮件 tab 已加载一屏"（真实流程由 store 用例覆盖） */
-async function freshEmail(rows: Record<string, unknown>[] = [email()], error = '') {
-  vi.resetModules()
-  const storeMod = (await import('../stores/inbox')) as typeof InboxStore
-  const { default: InboxDrawer } = await import('./InboxDrawer.vue')
-  storeMod.inbox.tab = 'email'
-  storeMod.inbox.emails = rows as never
-  storeMod.inbox.emailUnread = rows.filter((r) => (r as { unread?: boolean }).unread).length
-  storeMod.inbox.emailLoaded = true
-  storeMod.inbox.emailError = error
-  storeMod.inbox.emailLastOkAt = Date.now()
-  const w = mount(InboxDrawer)
-  return { storeMod, w }
-}
-
-describe('InboxDrawer：邮件 tab', () => {
-  it('两个 tab 都在；切到「邮件」后通知那一套（筛选/时间窗/一键已读）让位给邮件工具条', async () => {
-    const { w } = await freshEmail()
-    expect(w.findAll('[data-testid="inbox-tab"]').map((b) => b.text())).toEqual(['通知', '邮件'])
-
-    // 邮件 tab 上：通知的筛选、起始时间、一键已读都不该出现（免得点错口径）
-    expect(w.find('[data-testid="inbox-filter"]').exists()).toBe(false)
-    expect(w.find('[data-testid="inbox-since"]').exists()).toBe(false)
-    expect(w.find('[data-testid="inbox-read-all"]').exists()).toBe(false)
-    // 邮件工具条 + 只读提示在
-    expect(w.findAll('[data-testid="inbox-email-days"]').map((b) => b.text())).toEqual(['1 天', '3 天', '7 天'])
-    expect(w.find('[data-testid="inbox-email-unread-only"]').exists()).toBe(true)
-    expect(w.find('[data-testid="inbox-email-hint"]').text()).toContain('只读')
-  })
-
-  it('★ 时间窗档位 = 1/3/7 天且**默认 3 天**；点一下按该 days 重拉（不是摆设）', async () => {
-    const { storeMod, w } = await freshEmail()
-    const btns = w.findAll('[data-testid="inbox-email-days"]')
-    expect(btns.map((b) => b.text())).toEqual(['1 天', '3 天', '7 天'])
-    // 默认值从 7 改成 3 之后最容易犯的两种错：① 选中态仍落在 7 上（改了 store 没改 reset）
-    // ② 档位数组里根本没有 3（前后端各写一份的老毛病）→ 两条一起断言
-    expect(btns.filter((b) => b.classes().includes('bg-gray-900')).map((b) => b.text())).toEqual(['3 天'])
-    expect(storeMod.inbox.emailDays).toBe(3)
-
-    await btns[0].trigger('click')
+describe('InboxDrawer：只放通知（邮件已搬走）', () => {
+  it('不再有「通知/邮件」tab 行，也没有邮件条目', async () => {
+    vi.resetModules()
+    const storeMod = (await import('../stores/inbox')) as typeof InboxStore
+    const { default: InboxDrawer } = await import('./InboxDrawer.vue')
+    storeMod.inbox.messages = [msg()] as never
+    storeMod.inbox.loaded = true
+    const w = mount(InboxDrawer)
     await flushPromises()
-    expect(storeMod.inbox.emailDays).toBe(1)
-    expect(
-      calls.some((c) => c.startsWith('GET /inbox/email/messages?') && c.includes('days=1')),
-    ).toBe(true)
-  })
-
-  it('★ 邮件未读不写进徽标：头部不显示"未读/一键已读"', async () => {
-    const { w } = await freshEmail([email({ unread: true })])
-    expect(w.find('[data-testid="inbox-drawer-unread"]').exists()).toBe(false)
-    expect(w.text()).not.toContain('全部已读')
-  })
-
-  it('列表：发件人 / 主题 / 摘要都在；点开拉全文并渲染', async () => {
-    const { w, storeMod } = await freshEmail()
-    expect(w.find('[data-testid="inbox-email-from"]').text()).toContain('xd602201@163.com')
-    expect(w.text()).toContain('📊 模拟盘早间选股 2026-09-24')
-    expect(w.text()).toContain('摘要一行')
-
-    await w.find('[data-testid="inbox-email-item"] button').trigger('click')
-    await flushPromises()
-    expect(storeMod.inbox.emailDetail?.body).toBe('邮件正文（纯文本）')
-    expect(w.find('[data-testid="inbox-email-detail-body"]').text()).toContain('邮件正文')
-  })
-
-  it('「就这封问 agent」把整封 emit 出去（发送逻辑不放在组件里）', async () => {
-    const { w } = await freshEmail()
-    await w.find('[data-testid="inbox-email-item"] button').trigger('click')
-    await flushPromises()
-    await w.find('[data-testid="inbox-email-ask"]').trigger('click')
-    const emitted = w.emitted('ask-email')
-    expect(emitted).toBeTruthy()
-    expect((emitted![0][0] as { uid: string }).uid).toBe('1315301460')
-  })
-
-  it('★ 读邮箱失败：一行明确报错 + 重试按钮；点了重试能恢复', async () => {
-    const { w, storeMod } = await freshEmail([], '')
-    storeMod.inbox.emailLoaded = false // 还没成功加载过 ⇒ 切到邮件 tab 会真去拉
-    emailMode = 'fail'
-    await storeMod.setTab('notice')
-    await w.find('[data-testid="inbox-tab"]:nth-child(2)').trigger('click')
-    await flushPromises()
-
-    const err = w.find('[data-testid="inbox-email-error"]')
-    expect(storeMod.inbox.emailError).toMatch(/连不上消息服务/)
-    expect(err.exists()).toBe(true)
-    expect(err.text()).toContain('重试')
-
-    emailMode = 'ok'
-    await w.find('[data-testid="inbox-email-retry"]').trigger('click')
-    await flushPromises()
-    expect(storeMod.inbox.emailError).toBe('')
-    expect(w.find('[data-testid="inbox-email-item"]').exists()).toBe(true)
+    expect(w.findAll('[data-testid="inbox-tab"]')).toHaveLength(0)
+    expect(w.find('[data-testid="inbox-email-item"]').exists()).toBe(false)
+    expect(w.find('[data-testid="inbox-email-hint"]').exists()).toBe(false)
+    // 但通知照常渲染（别把"删干净"变成"删多了"）
+    expect(w.findAll('[data-testid="inbox-item"]')).toHaveLength(1)
+    expect(w.text()).toContain('510210 上涨触发规则22')
   })
 })

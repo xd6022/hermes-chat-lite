@@ -12,6 +12,8 @@ import Sidebar from './components/Sidebar.vue'
 import ChatWindow from './components/ChatWindow.vue'
 import Notice from './components/Notice.vue'
 import InboxBell from './components/InboxBell.vue'
+import EmailBell from './components/EmailBell.vue'
+import EmailDrawer from './components/EmailDrawer.vue'
 import InboxDrawer from './components/InboxDrawer.vue'
 import {
   checkHealth,
@@ -35,7 +37,8 @@ import {
 } from './stores/inbox'
 import { POLL_OPTIONS } from './lib/inboxPoll'
 import { pollSetting, setPollSetting } from './lib/inboxSettings'
-import type { InboxEmail, InboxMessage } from './api/inbox'
+import { email, loadEmails } from './stores/email'
+import type { CachedEmail, InboxMessage } from './api/inbox'
 import { currentRoute, markInitialRoute, navigate, onRouteChange, type Route } from './lib/route'
 import { watchForeground } from './lib/page-lifecycle'
 import { theme, toggleTheme } from './lib/theme'
@@ -121,11 +124,22 @@ let offRoute: (() => void) | null = null
  * 那是另一件事（要动 v2.12 那套路由），首期不做。
  */
 const inboxOpen = ref(false)
+/** 邮件抽屉（v3.3，顶栏独立图标）—— 与消息抽屉**互斥**：同时开会叠两层 `fixed inset-0` 遮罩，
+ *  下层的按钮点不动（本项目踩过）。 */
+const emailOpen = ref(false)
 
 async function toggleInbox(): Promise<void> {
+  emailOpen.value = false
   inboxOpen.value = !inboxOpen.value
   // `关闭` 档下不自动拉（用户口径：关闭 = 连开抽屉也不拉，只有手动刷新才拉）
   if (inboxOpen.value) await onDrawerOpen()
+}
+
+/** 邮件：点开就**读一次缓存**（瞬时；只有抽屉里那个刷新按钮才会真连邮箱） */
+async function toggleEmail(): Promise<void> {
+  inboxOpen.value = false
+  emailOpen.value = !emailOpen.value
+  if (emailOpen.value) await loadEmails()
 }
 
 /** 轮询发现新消息 → 一句轻提示（5 秒自己走，点一下就没） */
@@ -173,8 +187,8 @@ async function askAbout(msg: InboxMessage): Promise<void> {
  * 与通知那版的区别：邮件**不落库**，正文就取刚拉到的详情（不再多一次请求）；
  * ★ **不标已读** —— 邮件状态归邮箱，前端一概不动（用户 2026-09-24 定调）。
  */
-async function askAboutEmail(mail: InboxEmail): Promise<void> {
-  inboxOpen.value = false
+async function askAboutEmail(mail: CachedEmail): Promise<void> {
+  emailOpen.value = false
   if (store.streaming || store.run.phase === 'background') {
     notice.value = '正在生成中，等这一轮结束再问'
     return
@@ -187,7 +201,7 @@ async function askAboutEmail(mail: InboxEmail): Promise<void> {
     }
     navigate(id, { mode: 'push' })
   }
-  const body = inbox.emailDetail && inbox.emailDetail.uid === mail.uid ? inbox.emailDetail.body : mail.excerpt
+  const body = email.detail && email.detail.id === mail.id ? email.detail.body : mail.excerpt
   await send(`【邮箱】${mail.subject}\n\n${body || ''}\n\n（上面这封是我邮箱里的邮件，请结合我的规则给处理建议。）`)
 }
 
@@ -270,7 +284,8 @@ onBeforeUnmount(() => {
         <span v-else>已连接</span>
       </span>
 
-      <InboxBell class="ml-auto" :open="inboxOpen" @toggle="toggleInbox()" />
+      <EmailBell class="ml-auto" :open="emailOpen" @toggle="toggleEmail()" />
+      <InboxBell :open="inboxOpen" @toggle="toggleInbox()" />
 
       <button
         type="button"
@@ -317,8 +332,11 @@ onBeforeUnmount(() => {
   <!-- 会自动消失的轻提示（点击立即消失；5 秒后自己走） -->
   <Notice v-if="notice" :text="notice" @close="notice = ''" />
 
-  <!-- 消息中心抽屉（v1）：与 Settings 同一套骨架，`关闭` 档只是不自动拉，界面照常可用 -->
-  <InboxDrawer v-if="inboxOpen" @close="inboxOpen = false" @ask="askAbout" @ask-email="askAboutEmail" />
+  <!-- 消息中心抽屉（v1）：与 Settings 同一套骨架，`关闭` 档只是不自动拉，界面照常可用；只放通知 -->
+  <InboxDrawer v-if="inboxOpen" @close="inboxOpen = false" @ask="askAbout" />
+
+  <!-- 邮件抽屉（v3.3）：顶栏独立图标，读缓存；只有里面的刷新按钮才连邮箱 -->
+  <EmailDrawer v-if="emailOpen" @close="emailOpen = false" @ask-email="askAboutEmail" />
 
   <!-- Settings 抽屉（最小化：不做模型切换 / Prompt / Agent 配置） -->
   <div v-if="settings" class="fixed inset-0 z-40 bg-black/20 dark:bg-black/50" @click.self="settings = false">

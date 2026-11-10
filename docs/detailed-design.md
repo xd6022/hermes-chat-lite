@@ -1395,6 +1395,8 @@ v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openS
    hermes 的内网 IP 变了，而 `upstream hermes_api { server hermes:8642; }` 这种**静态域名只在 nginx 启动那一刻解析一次**，
    之后永不重查；chatlite 没人重启 ⇒ 它一直往旧 IP 连。API server 日志里来自 chatlite（172.18.0.17）的最后一条请求
    是 16:39:48，即重启前 25 秒，之后**一条都没有** —— "服务端 access log 里这个客户端突然消失"是这类故障最硬的证据。
+   ★ 最快的判据：**在 chatlite 容器内部 `wget http://hermes:8642/health` 是通的**（DNS 和网络都好），
+   只有**走 nginx 的 `/api/*` 是 502** ⇒ 旧 IP 只存在于 nginx 的解析缓存里，一眼定位。
    定法（已落地）：上游改成**变量 + resolver** 的动态解析 ——
    `resolver 127.0.0.11 valid=10s ipv6=off; resolver_timeout 3s;`（Docker 内嵌 DNS，user-defined 网络恒为 127.0.0.11）
    + `set $hermes_api "hermes:8642";` + `proxy_pass http://$hermes_api;`；换 IP 后 ≤10 秒自愈，不必人工重启。

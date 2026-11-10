@@ -1404,3 +1404,15 @@ v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openS
    ⚠️ 变量名用小写、且不能与环境变量同名（镜像入口的 envsubst 只替换"环境里存在"的名字）。
    排查顺序（省时间）：① 静态页 200？② 另一条反代腿（`/inbox/*`，走另一个 upstream）通不通 —— 一步区分"整个容器坏了"
    还是"某一条 upstream 坏了"；③ 失败耗时（瞬时 = 端口拒了/容器不在；~3s = IP 不存在）；④ 服务端 access log 里该客户端的最后一条请求时间。
+
+79. **★ nginx 镜像的「临时容器 canary」必须让容器自己起来，别用 `compose run … sh -c` 探**（2026-11-10 部署时踩到，**假绿**） →
+   两个独立的错叠在一起，做出了一个"看起来通过、其实什么都没验"的 canary：
+   ① **入口脚本只认 `$1 = nginx`**：`nginx:alpine` 的 `/docker-entrypoint.sh` 只有在这个条件成立时才跑
+   `/docker-entrypoint.d/20-envsubst-on-templates.sh`（把我们 `nginx.conf` 模板展开成 `/etc/nginx/conf.d/default.conf`）。
+   用 `docker compose run … sh -c '…'` 进去探针 ⇒ **模板从未被处理**，容器跑的是镜像自带的默认配置
+   （access log 里 `server: localhost`），`/api/*` 全落到静态目录变 404。判据：**日志里出现 `server: localhost` 就是没吃我们的配置**。
+   正解：`docker run -d --name canary --network net_openclaw … <镜像>`（入口脚本照常跑）→ 再 `docker exec canary wget …` 探 → `docker rm -f`。
+   ② **`wget … | head -c 100` 的退出码是 `head` 的（永远 0）** ⇒ 即使 404 也当成功 ⇒ **假绿**。
+   正解：每条探针单独判退出码（`wget -qO /tmp/o "$u" || rc=1`），最后 `exit $rc`，宿主侧用 `docker exec` 的返回码做闸门。
+   可复用：**任何"部署前预检"都必须先能红一次**（拿旧版/故意坏掉的镜像跑一遍，确认它真的会失败），
+   否则它只是一段让人安心的日志。

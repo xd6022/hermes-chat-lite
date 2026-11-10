@@ -1386,3 +1386,19 @@ v2.2 只做了"有在跑的一轮时会自动接上（`resumeSync` 直接 `openS
    ② 写 RED 核验脚本时，备份名用 `basename` 会让**同名但不同目录**的文件互相覆盖
    （`src/api/inbox.ts` 与 `src/stores/inbox.ts`）⇒ 还原时把 A 的内容写进 B，build 直接挂。
    备份路径要**带子目录**：`cp "$f" "$BK/$f.bak"`。
+
+78. **★ nginx 的 `upstream` 静态域名只在启动时解析一次 —— 上游容器换 IP 后必须重启本容器**（2026-11-10 事故） →
+   现象：chatlite 的静态页 200、`/inbox/*` 200，但 `/api/*`、`/v1/*` 全 **502**（`/api/model-info` 有时 504）——
+   网页能打开、却发不出消息。**502 耗时固定 ~3.06s**，不是"连接被拒绝"那种瞬时失败：SYN 打到了一个**不存在的 IP**
+   （拿同网段空 IP 复现，耗时一模一样 3.06s）。
+   根因：`docker restart hermes`（2026-11-09 16:40，见 `/storage/script/2026-11-09/restart_result.txt`）之后
+   hermes 的内网 IP 变了，而 `upstream hermes_api { server hermes:8642; }` 这种**静态域名只在 nginx 启动那一刻解析一次**，
+   之后永不重查；chatlite 没人重启 ⇒ 它一直往旧 IP 连。API server 日志里来自 chatlite（172.18.0.17）的最后一条请求
+   是 16:39:48，即重启前 25 秒，之后**一条都没有** —— "服务端 access log 里这个客户端突然消失"是这类故障最硬的证据。
+   定法（已落地）：上游改成**变量 + resolver** 的动态解析 ——
+   `resolver 127.0.0.11 valid=10s ipv6=off; resolver_timeout 3s;`（Docker 内嵌 DNS，user-defined 网络恒为 127.0.0.11）
+   + `set $hermes_api "hermes:8642";` + `proxy_pass http://$hermes_api;`；换 IP 后 ≤10 秒自愈，不必人工重启。
+   代价：`proxy_pass` 一带变量 nginx 就**不再使用 upstream 连接池**（keepalive 失效，每请求新建连接）——自用低频站点可接受。
+   ⚠️ 变量名用小写、且不能与环境变量同名（镜像入口的 envsubst 只替换"环境里存在"的名字）。
+   排查顺序（省时间）：① 静态页 200？② 另一条反代腿（`/inbox/*`，走另一个 upstream）通不通 —— 一步区分"整个容器坏了"
+   还是"某一条 upstream 坏了"；③ 失败耗时（瞬时 = 端口拒了/容器不在；~3s = IP 不存在）；④ 服务端 access log 里该客户端的最后一条请求时间。
